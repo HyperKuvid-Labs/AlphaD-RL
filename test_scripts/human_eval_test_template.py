@@ -12,8 +12,11 @@ def extract_code(gc):
   match = re.search(pattern, gc, re.DOTALL)
   if match:
     return match.group(1).strip()
-  else:
-    return gc.strip()
+  code_start = re.search(r'^(import|def|from)', gc, re.MULTILINE)
+  if code_start:
+      return gc[code_start.start():].strip()
+
+  return gc.strip()
 
 def extract_result(output):
   # extract the result from the output, we can look for the line that starts with "Passed" and extract the numbers
@@ -68,17 +71,26 @@ def evaulate_model_on_humaneval(model_name):
   # assert candidate([1.1, 2.2, 3.1, 4.1, 5.1], 0.5) == False
 
   prompt_template = """
-  Complete this code snippet for the function defined, and make sure its optimized, and also include the test_cases in the main function to execute the test cases and check the file when executed
+  You are a Python expert. Your task is to complete the function below.
+  Return ONLY the executable Python code.
+  DO NOT include any explanation, markdown formatting outside of the code block, or introductory text.
+
+  ### Instruction:
+  Complete the function and include a main block that runs the provided test cases.
+  The script must print the exact string: "Passed X out of Y test cases".
+
+  ### Code to Complete:
   """
 
-  prompt_end_thing = """Add the number of test cases passing like this at the end of the code when executed, example:
+  prompt_end_thing = """
+  ### Formatting Requirement:
+  Include the following logic at the end of your script:
   if __name__ == "__main__":
-  # run the test cases and count how many pass
-  pass_count = 0
-  total_count = 0
-  # run the test cases and update pass_count and total_count
-  print(f"Passed {pass_count} out of {total_count} test cases")
+      # run all test cases provided
+      # ...
+      print(f"Passed {pass_count} out of {total_count} test cases")
   """
+
   os.makedirs("temp_test", exist_ok=True)
 
   count_passed = 0
@@ -87,7 +99,7 @@ def evaulate_model_on_humaneval(model_name):
     _, prompt, _, test_cases, _ = dataset[i].values()
     input_prompt = prompt_template + "\n\n" + prompt + "\n\n" + test_cases + "\n\n" + prompt_end_thing
     inputs = tokenizer(input_prompt, return_tensors="pt").to(device)
-    outputs = model.generate(**inputs, max_length=1024)
+    outputs = model.generate(**inputs, max_length=1024, temperature=0.1, top_p=0.95)
     generated_code = tokenizer.decode(outputs[0], skip_special_tokens=True)
     with open(f"temp_test/test_{i}.py", "w") as f:
       generated_code = extract_code(generated_code)
