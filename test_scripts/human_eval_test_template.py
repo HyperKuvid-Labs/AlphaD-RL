@@ -149,7 +149,7 @@ def evaulate_model_on_humaneval(model_name):
 
   count_passed = 0
 
-  for i in range(1):
+  for i in range(len(dataset)):
     _, prompt, _, test_cases, _ = dataset[i].values()
     full_prompt = f"""# Task: Complete the Python function and run the tests.
       # Return ONLY the code.
