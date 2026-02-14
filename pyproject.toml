@@ -1,11 +1,19 @@
 [project]
 name = "alphad-rl"
 version = "0.1.0"
-description = "Multi-Teacher Monte Carlo Tree Search with Dynamic Weighting and Policy Distillation for Code Generation"
-readme = "README.md"
-requires-python = ">=3.11.14"
-dependencies = [
-    "datasets>=4.5.0",
-    "torch>=2.10.0",
-    "transformers>=5.1.0",
+description = ""
+authors = [
+    {name = "Yuvanesh Sankar",email = "yuvanesh.skv@gmail.com"}
 ]
+readme = "README.md"
+requires-python = ">=3.11,<3.14"
+dependencies = [
+    "datasets (>=4.5.0,<5.0.0)",
+    "torch (>=2.9.0,<3.0.0)",
+    "transformers (>=4.56.0,<5)"
+]
+
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"
