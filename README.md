@@ -5,6 +5,6 @@ Student model: Qwen/Qwen3-0.6B
 Teacher model: Qwen/Qwen2.5-Coder-7B-Instruct, deepseek-ai/deepseek-coder-6.7b-instruct, meta-llama/CodeLlama-7b-Instruct-hf
 
 There are two phases in here:
-- training the model to determine, which level is enough for generating the whole function from there
+- training the model to determine, which level is enough for the token level, and generating the whole function from there
 - mcts planned teacher populated tree search with boiling down to path of selected and rejected, and dpo optimization of local model, adn then after iteration update the main target model.
 
