@@ -45,41 +45,44 @@ def check_main(gc):
   return "if __name__ == \"__main__\""  and "def main():" in gc
 
 def add_main_block(gc, test_cases, function_name):
-  # the test_cases are like this, i need to replace change the candidate to the function name and then add a main block that runs the tests
-  #   METADATA = {
-  # 'author': 'jt',
-  # 'dataset': 'test'
-  # }
+  # test_cases come from the dataset and include METADATA and def check(candidate): with assert statements
+  # we need to extract just the assert statements, replace candidate with function_name, and create a proper test runner
 
+  import re
 
-  # def check(candidate):
-  # assert candidate([1.0, 2.0, 3.9, 4.0, 5.0, 2.2], 0.3) == True
-  # assert candidate([1.0, 2.0, 3.9, 4.0, 5.0, 2.2], 0.05) == False
-  # assert candidate([1.0, 2.0, 5.9, 4.0, 5.0], 0.95) == True
-  # assert candidate([1.0, 2.0, 5.9, 4.0, 5.0], 0.8) == False
-  # assert candidate([1.0, 2.0, 3.0, 4.0, 5.0, 2.0], 0.1) == True
-  # assert candidate([1.1, 2.2, 3.1, 4.1, 5.1], 1.0) == True
-  # assert candidate([1.1, 2.2, 3.1, 4.1, 5.1], 0.5) == False
-  # we can replace "candidate" with the function name and then add a main block that runs the tests
-  test_cases = test_cases.replace("candidate", function_name)
-  # need to add the test_cases to the generated code and then add a main block that runs the tests with the proper intendation
-  test_cases = "\n".join(["    " + line for line in test_cases.split("\n")])
-  # can add a line to return how many of them passed from the test_cases
-  # first line we can add a count thing
-  test_cases = "pass_count = 0\n" + test_cases
-  # then we can add a line to increment the count for each assert statement, we can do this by replacing "assert" with "if not (condition): pass else: pass_count += 1"
-  test_cases = test_cases.replace("assert ", "if not (") + "): pass\nelse: pass_count += 1\n"
-  test_cases = test_cases + "\ntotal_count = " + str(test_cases.count("assert "))
-  # need to return the pass_count and total_count at the end of the test_cases
-  test_cases = test_cases + "\nprint(f\"Passed {pass_count} out of {total_count} test cases\")"
-  gc = gc + "\n\n" + test_cases
-  main_block = f"""
-  if __name__ == "__main__":
-      try:
-          check({function_name})
-      except Exception as e:
-    """
-  return gc + "\n" + main_block
+  # remove the METADATA block
+  test_cases = re.sub(r'METADATA\s*=\s*\{[^}]*\}', '', test_cases, flags=re.DOTALL)
+
+  # extract all assert statements from the check function
+  assert_pattern = r'assert\s+(.+?)(?=\n|$)'
+  assertions = re.findall(assert_pattern, test_cases, re.DOTALL)
+
+  # count total test cases
+  total_count = len(assertions)
+
+  # create the test runner
+  test_code = "\n# test runner to check all test cases\n"
+  test_code += "if __name__ == \"__main__\":\n"
+  test_code += "    pass_count = 0\n"
+  test_code += f"    total_count = {total_count}\n"
+  test_code += "    \n"
+
+  # add each test case with try-except to count passes
+  for idx, assertion in enumerate(assertions):
+    # replace candidate with the actual function name
+    assertion = assertion.replace("candidate", function_name)
+    test_code += f"    # test case {idx + 1}\n"
+    test_code += "    try:\n"
+    test_code += f"        assert {assertion.strip()}\n"
+    test_code += "        pass_count += 1\n"
+    test_code += "    except AssertionError:\n"
+    test_code += "        pass\n"
+    test_code += "    \n"
+
+  # add the final print statement
+  test_code += "    print(f\"Passed {pass_count} out of {total_count} test cases\")\n"
+
+  return gc + "\n" + test_code
 
 def evaulate_model_on_humaneval(model_name):
   # model id, for now: Qwen/Qwen3-4B
