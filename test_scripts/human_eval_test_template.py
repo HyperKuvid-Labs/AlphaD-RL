@@ -8,10 +8,20 @@ def extract_code(gc):
   # extract code from the generated text
   # we can use regex to extract the code between ```python and ```
   import re
+
+  # First, try to extract code between # BEGIN SOLUTION and # END SOLUTION
+  solution_pattern = r"# BEGIN SOLUTION(.*?)# END SOLUTION"
+  solution_match = re.search(solution_pattern, gc, re.DOTALL)
+  if solution_match:
+    return solution_match.group(1).strip()
+
+  # Then try to extract code between ```python and ```
   pattern = r"```python(.*?)```"
   match = re.search(pattern, gc, re.DOTALL)
   if match:
     return match.group(1).strip()
+
+  # Finally, look for code starting with import/def/from
   code_start = re.search(r'^(import|def|from)', gc, re.MULTILINE)
   if code_start:
       return gc[code_start.start():].strip()
