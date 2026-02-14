@@ -97,8 +97,26 @@ def evaulate_model_on_humaneval(model_name):
 
   for i in range(1):
     _, prompt, _, test_cases, _ = dataset[i].values()
-    input_prompt = prompt_template + "\n\n" + prompt + "\n\n" + test_cases + "\n\n" + prompt_end_thing
-    inputs = tokenizer(input_prompt, return_tensors="pt").to(device)
+    full_prompt = f"""# Task: Complete the Python function and run the tests.
+      # Return ONLY the code.
+
+      {prompt}
+          # Implementation goes here
+          pass
+
+      {test_cases}
+
+      if __name__ == "__main__":
+          try:
+              check({dataset[i]['entry_point']})
+              # If no assertion error, all tests passed.
+              # HumanEval 'test' strings usually contain multiple asserts.
+              # We will wrap the 'check' function to count successes.
+              print("Passed 1 out of 1 test cases")
+          except Exception as e:
+              print("Passed 0 out of 1 test cases")
+      """
+    inputs = tokenizer(full_prompt, return_tensors="pt").to(device)
     outputs = model.generate(**inputs, max_length=1024, temperature=0.1, top_p=0.95)
     generated_code = tokenizer.decode(outputs[0], skip_special_tokens=True)
     with open(f"temp_test/test_{i}.py", "w") as f:
