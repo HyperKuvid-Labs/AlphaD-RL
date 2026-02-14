@@ -1,9 +1,110 @@
 import torch
 from transformers import AutoTokenizer, AutoModelForCausalLM
 from datasets import load_dataset
+import os
+import subprocess
+
+def extract_code(gc):
+  # extract code from the generated text
+  # we can use regex to extract the code between ```python and ```
+  import re
+  pattern = r"```python(.*?)```"
+  match = re.search(pattern, gc, re.DOTALL)
+  if match:
+    return match.group(1).strip()
+  else:
+    return gc.strip()
+
+def extract_result(output):
+  # extract the result from the output, we can look for the line that starts with "Passed" and extract the numbers
+  import re
+  pattern = r"Passed (\d+) out of (\d+) test cases"
+  match = re.search(pattern, output)
+  if match:
+    pass_count = int(match.group(1))
+    total_count = int(match.group(2))
+    return pass_count, total_count
+  else:
+    return 0, 0
 
 def evaulate_model_on_humaneval(model_name):
   # model id, for now: Qwen/Qwen3-4B
   device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
   tokenizer = AutoTokenizer.from_pretrained(model_name)
   model = AutoModelForCausalLM.from_pretrained(model_name).to(device)
+
+  dataset = load_dataset("openai/openai_humaneval", split="test")
+
+  # dataset has these columns -> task_id, prompt, canonical_solution, test, entry_point we can ignore canonical_solution and entry_point for now
+  # my idea is to generate the whole code from the prompt, save it and then run the test cases on it and see if it passes or not
+
+  # prompt format
+  # from typing import List
+
+
+  # def has_close_elements(numbers: List[float], threshold: float) -> bool:
+  # """ Check if in given list of numbers, are any two numbers closer to each other than
+  # given threshold.
+  # >>> has_close_elements([1.0, 2.0, 3.0], 0.5)
+  # False
+  # >>> has_close_elements([1.0, 2.8, 3.0, 4.0, 5.0, 2.0], 0.3)
+  # True
+  # """
+
+  # test format
+  # METADATA = {
+  # 'author': 'jt',
+  # 'dataset': 'test'
+  # }
+
+
+  # def check(candidate):
+  # assert candidate([1.0, 2.0, 3.9, 4.0, 5.0, 2.2], 0.3) == True
+  # assert candidate([1.0, 2.0, 3.9, 4.0, 5.0, 2.2], 0.05) == False
+  # assert candidate([1.0, 2.0, 5.9, 4.0, 5.0], 0.95) == True
+  # assert candidate([1.0, 2.0, 5.9, 4.0, 5.0], 0.8) == False
+  # assert candidate([1.0, 2.0, 3.0, 4.0, 5.0, 2.0], 0.1) == True
+  # assert candidate([1.1, 2.2, 3.1, 4.1, 5.1], 1.0) == True
+  # assert candidate([1.1, 2.2, 3.1, 4.1, 5.1], 0.5) == False
+
+  prompt_template = """
+  Complete this code snippet for the function defined, and make sure its optimized, and also include the test_cases in the main function to execute the test cases and check the file when executed
+  """
+
+  prompt_end_thing = """Add the number of test cases passing like this at the end of the code when executed, example:
+  if __name__ == "__main__":
+  # run the test cases and count how many pass
+  pass_count = 0
+  total_count = 0
+  # run the test cases and update pass_count and total_count
+  print(f"Passed {pass_count} out of {total_count} test cases")
+  """
+  os.makedirs("temp_test", exist_ok=True)
+
+  count_passed = 0
+
+  for i in range(1):
+    _, prompt, _, test_cases, _ = dataset[i].values()
+    input_prompt = prompt_template + "\n\n" + prompt + "\n\n" + test_cases + "\n\n" + prompt_end_thing
+    inputs = tokenizer(input_prompt, return_tensors="pt").to(device)
+    outputs = model.generate(**inputs, max_length=1024)
+    generated_code = tokenizer.decode(outputs[0], skip_special_tokens=True)
+    with open(f"temp_test/test_{i}.py", "w") as f:
+      generated_code = extract_code(generated_code)
+      f.write(generated_code)
+
+    # need to run the generated code and check how many test cases pass, we can use subprocess to run the code and capture the output
+    result = subprocess.run(["python", f"temp_test/test_{i}.py"], capture_output=True, text=True)
+    print(result.stdout)
+
+    res = extract_result(result.stdout)
+    if res:
+      pass_count, total_count = res
+      if pass_count == total_count and total_count > 0:
+        count_passed += 1
+
+  print(f"Model {model_name} passed {count_passed} out of {len(dataset)} problems")
+
+if __name__ == "__main__":
+  model_name = "Qwen/Qwen3-4B"
+  evaulate_model_on_humaneval(model_name)
