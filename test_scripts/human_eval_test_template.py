@@ -185,14 +185,23 @@ def evaulate_model_on_humaneval(model_name):
       f.write(generated_code)
 
     # need to run the generated code and check how many test cases pass, we can use subprocess to run the code and capture the output
-    result = subprocess.run(["python", f"temp_test/test_{i}.py"], capture_output=True, text=True)
-    print(result.stdout)
+    # add a timeout of 5 seconds to prevent infinite loops or hanging code
+    try:
+      result = subprocess.run(["python", f"temp_test/test_{i}.py"], capture_output=True, text=True, timeout=5)
+      print(result.stdout)
+      if result.stderr:
+        print(f"Error output: {result.stderr}")
+    except subprocess.TimeoutExpired:
+      print("Test execution timed out after 5 seconds")
+      result = None
 
-    res = extract_result(result.stdout)
-    if res:
-      pass_count, total_count = res
-      if pass_count == total_count and total_count > 0:
-        count_passed += 1
+    # extract the result and check if all test cases passed
+    if result:
+      res = extract_result(result.stdout)
+      if res:
+        pass_count, total_count = res
+        if pass_count == total_count and total_count > 0:
+          count_passed += 1
 
   print(f"Model {model_name} passed {count_passed} out of {len(dataset)} problems")
 
