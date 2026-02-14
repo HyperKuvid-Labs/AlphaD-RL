@@ -119,6 +119,7 @@ def evaulate_model_on_humaneval(model_name):
     inputs = tokenizer(full_prompt, return_tensors="pt").to(device)
     outputs = model.generate(**inputs, max_length=1024, temperature=0.1, top_p=0.95)
     generated_code = tokenizer.decode(outputs[0], skip_special_tokens=True)
+    print(f"Generated code for problem {i}:\n{generated_code}\n{'-'*50}")
     with open(f"temp_test/test_{i}.py", "w") as f:
       generated_code = extract_code(generated_code)
       f.write(generated_code)
