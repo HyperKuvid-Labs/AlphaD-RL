@@ -162,16 +162,14 @@ def evaulate_model_on_humaneval(model_name):
     print(f"outputs: {outputs}")
     generated_code = tokenizer.decode(outputs[0], skip_special_tokens=True)
     print(f"Generated code for problem {i}:\n{generated_code}\n{'-'*50}")
+
     with open(f"temp_test/test_{i}.py", "w") as f:
       generated_code = extract_code(generated_code)
+      x = check_main(generated_code)
+      function_name = dataset[i]['entry_point']
+      if not x:
+        generated_code = add_main_block(generated_code, test_cases, function_name)
       f.write(generated_code)
-
-    x = check_main(generated_code)
-
-    function_name = dataset[i]['entry_point']
-
-    if not x:
-      gc = add_main_block(gc, test_cases, function_name)
 
     # need to run the generated code and check how many test cases pass, we can use subprocess to run the code and capture the output
     result = subprocess.run(["python", f"temp_test/test_{i}.py"], capture_output=True, text=True)
