@@ -30,6 +30,47 @@ def extract_result(output):
   else:
     return 0, 0
 
+def check_main(gc):
+  # check if the generated code has a main block that runs the tests
+  return "if __name__ == \"__main__\""  and "def main():" in gc
+
+def add_main_block(gc, test_cases, function_name):
+  # the test_cases are like this, i need to replace change the candidate to the function name and then add a main block that runs the tests
+  #   METADATA = {
+  # 'author': 'jt',
+  # 'dataset': 'test'
+  # }
+
+
+  # def check(candidate):
+  # assert candidate([1.0, 2.0, 3.9, 4.0, 5.0, 2.2], 0.3) == True
+  # assert candidate([1.0, 2.0, 3.9, 4.0, 5.0, 2.2], 0.05) == False
+  # assert candidate([1.0, 2.0, 5.9, 4.0, 5.0], 0.95) == True
+  # assert candidate([1.0, 2.0, 5.9, 4.0, 5.0], 0.8) == False
+  # assert candidate([1.0, 2.0, 3.0, 4.0, 5.0, 2.0], 0.1) == True
+  # assert candidate([1.1, 2.2, 3.1, 4.1, 5.1], 1.0) == True
+  # assert candidate([1.1, 2.2, 3.1, 4.1, 5.1], 0.5) == False
+  # we can replace "candidate" with the function name and then add a main block that runs the tests
+  test_cases = test_cases.replace("candidate", function_name)
+  # need to add the test_cases to the generated code and then add a main block that runs the tests with the proper intendation
+  test_cases = "\n".join(["    " + line for line in test_cases.split("\n")])
+  # can add a line to return how many of them passed from the test_cases
+  # first line we can add a count thing
+  test_cases = "pass_count = 0\n" + test_cases
+  # then we can add a line to increment the count for each assert statement, we can do this by replacing "assert" with "if not (condition): pass else: pass_count += 1"
+  test_cases = test_cases.replace("assert ", "if not (") + "): pass\nelse: pass_count += 1\n"
+  test_cases = test_cases + "\ntotal_count = " + str(test_cases.count("assert "))
+  # need to return the pass_count and total_count at the end of the test_cases
+  test_cases = test_cases + "\nprint(f\"Passed {pass_count} out of {total_count} test cases\")"
+  gc = gc + "\n\n" + test_cases
+  main_block = f"""
+  if __name__ == "__main__":
+      try:
+          check({function_name})
+      except Exception as e:
+    """
+  return gc + "\n" + main_block
+
 def evaulate_model_on_humaneval(model_name):
   # model id, for now: Qwen/Qwen3-4B
   device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -124,6 +165,13 @@ def evaulate_model_on_humaneval(model_name):
     with open(f"temp_test/test_{i}.py", "w") as f:
       generated_code = extract_code(generated_code)
       f.write(generated_code)
+
+    x = check_main(generated_code)
+
+    function_name = dataset[i]['entry_point']
+
+    if not x:
+      gc = add_main_block(gc, test_cases, function_name)
 
     # need to run the generated code and check how many test cases pass, we can use subprocess to run the code and capture the output
     result = subprocess.run(["python", f"temp_test/test_{i}.py"], capture_output=True, text=True)
