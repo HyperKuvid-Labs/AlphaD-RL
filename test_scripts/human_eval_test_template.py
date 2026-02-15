@@ -9,19 +9,21 @@ def extract_code(gc):
   # we can use regex to extract the code between ```python and ```
   import re
 
-  # First, try to extract code between # BEGIN SOLUTION and # END SOLUTION
   solution_pattern = r"# BEGIN SOLUTION(.*?)# END SOLUTION"
   solution_match = re.search(solution_pattern, gc, re.DOTALL)
   if solution_match:
     return solution_match.group(1).strip()
 
-  # Then try to extract code between ```python and ```
   pattern = r"```python(.*?)```"
   match = re.search(pattern, gc, re.DOTALL)
   if match:
     return match.group(1).strip()
 
-  # Finally, look for code starting with import/def/from
+  solution_label_pattern = r"Solution:\s*(.*)"
+  solution_label_match = re.search(solution_label_pattern, gc, re.DOTALL | re.IGNORECASE)
+  if solution_label_match:
+    return solution_label_match.group(1).strip()
+
   code_start = re.search(r'^(import|def|from)', gc, re.MULTILINE)
   if code_start:
       return gc[code_start.start():].strip()
@@ -123,27 +125,6 @@ def evaulate_model_on_humaneval(model_name):
   # assert candidate([1.0, 2.0, 3.0, 4.0, 5.0, 2.0], 0.1) == True
   # assert candidate([1.1, 2.2, 3.1, 4.1, 5.1], 1.0) == True
   # assert candidate([1.1, 2.2, 3.1, 4.1, 5.1], 0.5) == False
-
-  prompt_template = """
-  You are a Python expert. Your task is to complete the function below.
-  Return ONLY the executable Python code.
-  DO NOT include any explanation, markdown formatting outside of the code block, or introductory text.
-
-  ### Instruction:
-  Complete the function and include a main block that runs the provided test cases.
-  The script must print the exact string: "Passed X out of Y test cases".
-
-  ### Code to Complete:
-  """
-
-  prompt_end_thing = """
-  ### Formatting Requirement:
-  Include the following logic at the end of your script:
-  if __name__ == "__main__":
-      # run all test cases provided
-      # ...
-      print(f"Passed {pass_count} out of {total_count} test cases")
-  """
 
   os.makedirs("temp_test", exist_ok=True)
 
