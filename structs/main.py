@@ -1,9 +1,10 @@
+from sre_parse import Tokenizer
 from vllm import LLM, SamplingParams
 import math
 
 
 model_name=""
-
+c=1.414
 def load_model(model_name: str):
     llm = LLM(model=model_name, gpu_memory_utilization=0.90)
     return llm
@@ -12,12 +13,14 @@ def load_model(model_name: str):
 teacher_model1=load_model(model_name)
 teacher_model2=load_model(model_name)
 teacher_model3=load_model(model_name)
-
+tokenizer1 = teacher_model1.get_tokenizer()
+tokenizer2 = teacher_model2.get_tokenizer()
+tokenizer3 = teacher_model3.get_tokenizer()
 
 class Node:
-  def __init__(self,token_id,pre_tokens,parent):
+  def __init__(self,token_id,generated_text,parent):
     self.token_id=token_id
-    self.pre_tokens=pre_tokens
+    self.generated_text=generated_text
     self.parent=parent
     self.children=[]
     self.visit_count=0
@@ -53,26 +56,43 @@ def select_leaf_node(root_node):
 
 
 def expand_leaf(leaf_node,prompt: str):
-  prompt="For this prompt {prompt} you have generated tokens untill this {leaf_node.pre_tokens} now generate the next token with this context"
-  generate_token
+  prompt=f"For this prompt {prompt} you have generated these texts untill this {leaf_node.generated_text} now generate the next token with this context"
+  generate_tokens=get_30_tokens(teacher_model1,teacher_model2,teacher_model3,prompt,tokenizer1,tokenizer2,tokenizer3)
+  for token in generate_tokens:
+    child_node=Node(token[0],leaf_node.generated_text+token[1],leaf_node)
+    leaf_node.add_child(child_node)
 
 
 
 
 
 
-def get_30_tokens(llm1: LLM, llm2: LLM, llm3: LLM,prompt: str):
-    vocab_size = llm1.get_tokenizer().vocab_size
-    params = SamplingParams(
+def get_30_tokens(llm1: LLM, llm2: LLM, llm3: LLM,prompt: str , tokenizer1 : Tokenizer, tokenizer2 : Tokenizer, tokenizer3 : Tokenizer):
+    vocab_size1 = tokenizer1.vocab_size
+    vocab_size2 = tokenizer2.vocab_size
+    vocab_size3 = tokenizer3.vocab_size
+    params1 = SamplingParams(
         temperature=0.5,
         top_p=1.0,
         max_tokens=1,
-        logprobs=vocab_size
+        logprobs=vocab_size1
+    )
+    params2 = SamplingParams(
+        temperature=0.5,
+        top_p=1.0,
+        max_tokens=1,
+        logprobs=vocab_size2
+    )
+    params3 = SamplingParams(
+        temperature=0.5,
+        top_p=1.0,
+        max_tokens=1,
+        logprobs=vocab_size3
     )
 
-    output1 = llm1.generate(prompts=[prompt], sampling_params=params)
-    output2 = llm2.generate(prompts=[prompt], sampling_params=params)
-    output3 = llm3.generate(prompts=[prompt], sampling_params=params)
+    output1 = llm1.generate(prompts=[prompt], sampling_params=params1)
+    output2 = llm2.generate(prompts=[prompt], sampling_params=params2)
+    output3 = llm3.generate(prompts=[prompt], sampling_params=params3)
     #First Prompt -> First Generated Sequence -> First Generated Token
     token_logprobs_dict1 = output1[0].outputs[0].logprobs[0]
     token_logprobs_dict2 = output2[0].outputs[0].logprobs[0]
@@ -93,17 +113,23 @@ def get_30_tokens(llm1: LLM, llm2: LLM, llm3: LLM,prompt: str):
         [(token_id, lp_obj.logprob) for token_id, lp_obj in token_logprobs_dict3.items()],
         key=lambda x: x[1]
     )
+    def format_decoded_list(logprob_list, tokenizer):
+      # Wraps token_id in a list [] because decode() expects a sequence of IDs
+      return [(t_id, tokenizer.decode([t_id]), lp) for t_id, lp in logprob_list]
 
-    bottom5_logprobs1 = sorted_logprobs1[:5]
-    top5_logprobs1 = sorted_logprobs1[-5:][::-1]
+    # Slice and format for Model 1
+    bottom5_1 = format_decoded_list(sorted_logprobs1[:5], tokenizer1)
+    top5_1 = format_decoded_list(sorted_logprobs1[-5:][::-1], tokenizer1)
 
-    bottom5_logprobs2 = sorted_logprobs2[:5]
-    top5_logprobs2 = sorted_logprobs2[-5:][::-1]
+    # Slice and format for Model 2
+    bottom5_2 = format_decoded_list(sorted_logprobs2[:5], tokenizer2)
+    top5_2 = format_decoded_list(sorted_logprobs2[-5:][::-1], tokenizer2)
 
-    bottom5_logprobs3 = sorted_logprobs3[:5]
-    top5_logprobs3 = sorted_logprobs3[-5:][::-1]
+    # Slice and format for Model 3
+    bottom5_3 = format_decoded_list(sorted_logprobs3[:5], tokenizer3)
+    top5_3 = format_decoded_list(sorted_logprobs3[-5:][::-1], tokenizer3)
 
-    return top5_logprobs1+bottom5_logprobs1+top5_logprobs2+bottom5_logprobs2+top5_logprobs3+bottom5_logprobs3
+    return top5_1 + bottom5_1 + top5_2 + bottom5_2 + top5_3 + bottom5_3
 
 
 
