@@ -135,26 +135,14 @@ def get_30_tokens(llm1: LLM, llm2: LLM, llm3: LLM,prompt: str , tokenizer1 : Tok
 
 
 
+def mcts(prompt , num_simulations) :
+  root_node=Node(token_id=None,generated_text="",parent=None)
 
+  for _ in range(num_simulations) :
+    leaf=select_leaf_node(root_node)
+    expand_leaf(leaf,prompt)
+    reward=0.5 # dummy
+    backpropagte(leaf,reward)
 
-
-
-# def check_full_generations():
-#   return 0
-
-# def tree():
-#   model_name=""
-#   teacher_model1=load_model(model_name)
-#   teacher_model2=load_model(model_name)
-#   teacher_model3=load_model(model_name)
-
-#   for data in loaded_datasets :
-#     prompt=data["prompt"]
-#     top5_logprobs1, bottom5_logprobs1 = get_logprobs(teacher_model1, prompt)
-#     top5_logprobs2, bottom5_logprobs2 = get_logprobs(teacher_model2, prompt)
-#     top5_logprobs3, bottom5_logprobs3 = get_logprobs(teacher_model3, prompt)
-
-#     if check_full_generations():
-
-
+  return root_node
 
