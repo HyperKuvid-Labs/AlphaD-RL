@@ -63,6 +63,11 @@ def expand_leaf(leaf_node,prompt: str):
     leaf_node.add_child(child_node)
 
 
+def backpropagte(node , reward):
+  node.visit_count+=1
+  node.value+=reward
+  if node.parent is not None :
+    return backpropagte(node.parent , reward)
 
 
 
@@ -117,19 +122,18 @@ def get_30_tokens(llm1: LLM, llm2: LLM, llm3: LLM,prompt: str , tokenizer1 : Tok
       # Wraps token_id in a list [] because decode() expects a sequence of IDs
       return [(t_id, tokenizer.decode([t_id]), lp) for t_id, lp in logprob_list]
 
-    # Slice and format for Model 1
     bottom5_1 = format_decoded_list(sorted_logprobs1[:5], tokenizer1)
     top5_1 = format_decoded_list(sorted_logprobs1[-5:][::-1], tokenizer1)
 
-    # Slice and format for Model 2
     bottom5_2 = format_decoded_list(sorted_logprobs2[:5], tokenizer2)
     top5_2 = format_decoded_list(sorted_logprobs2[-5:][::-1], tokenizer2)
 
-    # Slice and format for Model 3
     bottom5_3 = format_decoded_list(sorted_logprobs3[:5], tokenizer3)
     top5_3 = format_decoded_list(sorted_logprobs3[-5:][::-1], tokenizer3)
 
     return top5_1 + bottom5_1 + top5_2 + bottom5_2 + top5_3 + bottom5_3
+
+
 
 
 
