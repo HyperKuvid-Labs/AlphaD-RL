@@ -4,7 +4,7 @@ from vllm import LLM, SamplingParams
 import torch
 from datasets import load_dataset
 from trl import GRPOTrainer, GRPOConfig
-from ..structs.main import mcts
+from structs.main import mcts
 
 def get_cr(completion_reward, test_passed_reward):
   # if test cases are passed only, i consider the completion reward
