@@ -22,9 +22,63 @@ tokenizer1 = teacher_model1.get_tokenizer()
 tokenizer2 = teacher_model2.get_tokenizer()
 tokenizer3 = teacher_model3.get_tokenizer()
 
+def extract_code(code):
+  import re
+  code = re.sub(r'```(?:python)?\n', '', code)
+  code = re.sub(r'```', '', code)
+  return code.strip()
+
+def get_best_time_complexity(output1, output2, output3):
+   # my idea is that the time complexity will be printedin terms of n, if i have some number like 100, i can compatre between them and return the choice like 1, 2, 3 accordingly
+  import re
+  complexities = []
+  for output in [output1, output2, output3]:
+      match = re.search(r'Time Complexity:\s*O\(([^)]+)\)', output)
+      if match:
+          complexity = match.group(1).strip()
+          complexities.append(complexity)
+      else:
+          complexities.append(None)
+
+  values = []
+  for c in complexities:
+    if c is not None:
+       # need to replace n with 100 and evaluate the complexity
+      c_eval = c.replace('n', '100')
+      try:
+        # convert it into number first and then compare
+        complexity_value = eval(c_eval)
+        values.append(complexity_value)
+      except Exception as e:
+        print(f"Error evaluating complexity {c}: {e}")
+        complexity_value = float('inf')
+        values.append(complexity_value)
+
+  # get minimal value from the values and return the index
+  min_value = min(values)
+  best_index = values.index(min_value)
+  return best_index
+
 def get_best_solution(o1, o2, o3):
-   # i need to test the codes over here for efficiency and correctness and then return the best one
-  pass
+  # i need to test the codes over here for efficiency and correctness and then return the best one
+  # so we'll have the code with the time complexity measurement, just need to ensure the code is clean with no ```
+  o1, o2, o3 = extract_code(o1), extract_code(o2), extract_code(o3)
+  import subprocess
+  import os
+  os.makedirs("temp_best_solution", exist_ok=True)
+  with open("temp_best_solution/solution1.py", "w") as f:
+    f.write(o1)
+  with open("temp_best_solution/solution2.py", "w") as f:
+    f.write(o2)
+  with open("temp_best_solution/solution3.py", "w") as f:
+    f.write(o3)
+
+  so1 = subprocess.run(["python", "temp_best_solution/solution1.py"], capture_output=True, text=True)
+  so2 = subprocess.run(["python", "temp_best_solution/solution2.py"], capture_output=True, text=True)
+  so3 = subprocess.run(["python", "temp_best_solution/solution3.py"], capture_output=True, text=True)
+
+  x = get_best_time_complexity(so1.stdout, so2.stdout, so3.stdout)
+  return x
 
 
 def calculate_metrics_using_subprocess(script_text: str):
@@ -33,8 +87,8 @@ def calculate_metrics_using_subprocess(script_text: str):
 def level_guesser(seq_length , agreement , avg_value , node_count):
   return True
 
-def generate_best_solution(prompt: str):
-  prompt+="Generate the most efficient possible solution for this problem, give only the code without any explanation or markdown formatting and make sure it is correct and optimal"
+def generate_best_solution(prompt: str, tm1, tm2, tm3, params1, params2, params3):
+  prompt+="Generate the most efficient possible solution for this problem, give only the code without any explanation or markdown formatting and make sure it is correct and optimal, and also the whole code from the import to the main function with time complexity measurement also, where it needs to print out the time complexity at the end of the code execution"
   params1 = SamplingParams(
       temperature=0.5,
       top_p=1.0,
@@ -50,14 +104,15 @@ def generate_best_solution(prompt: str):
       top_p=1.0,
       max_tokens=1024
   )
-  output1 = teacher_model1.generate(prompts=[prompt], sampling_params=params1)
-  output2 = teacher_model2.generate(prompts=[prompt], sampling_params=params2)
-  output3 = teacher_model3.generate(prompts=[prompt], sampling_params=params3)
+  output1 = tm1.generate(prompts=[prompt], sampling_params=params1)
+  output2 = tm2.generate(prompts=[prompt], sampling_params=params2)
+  output3 = tm3.generate(prompts=[prompt], sampling_params=params3)
 
-  best_output=get_best_solution(output1[0].outputs[0].text,output2[0].outputs[0].text,output3[0].outputs[0].text)
+  best_output_index=get_best_solution(output1[0].outputs[0].text,output2[0].outputs[0].text,output3[0].outputs[0].text)
+  best_output = [output1[0].outputs[0].text, output2[0].outputs[0].text, output3[0].outputs[0].text][best_output_index]
   return best_output
 
-def get_process_reward(prompt : str, best_solution :str , partial_solution :str ) :
+def get_process_reward(prompt : str, best_solution :str , partial_solution :str, teacher_model1,teacher_model2,teacher_model3,tokenizer1,tokenizer2,tokenizer3) -> float:
   final_prompt=f"""You are an expert code evaluator. Your job is to grade partial, incomplete code on a scale of -1.0 to 1.0 based on whether it is on the right track to solving the user's prompt.
   User Prompt: {prompt}
   Reference Solution (For context only): > {best_solution}
@@ -183,8 +238,6 @@ def get_top_3_leaves(leaf_nodes):
     sorted_leaves = sorted(leaf_nodes, key=get_average_reward, reverse=True)
     return sorted_leaves[:3]
 
-
-
 def get_30_tokens(llm1: LLM, llm2: LLM, llm3: LLM,prompt: str , tokenizer1 , tokenizer2 , tokenizer3 ):
     vocab_size1 = tokenizer1.vocab_size
     vocab_size2 = tokenizer2.vocab_size
@@ -250,13 +303,13 @@ def get_30_tokens(llm1: LLM, llm2: LLM, llm3: LLM,prompt: str , tokenizer1 , tok
 
 
 
-def mcts(prompt , num_simulations) :
+def mcts(prompt , num_simulations, teacher_model1,teacher_model2,teacher_model3, params1, params2, params3, tokenizer1, tokenizer2, tokenizer3) :
   root_node=Node(token_id=None,generated_text="",parent=None)
-  golden_solution=generate_best_solution(prompt)
+  golden_solution=generate_best_solution(prompt, teacher_model1,teacher_model2,teacher_model3, params1, params2, params3)
   for _ in range(num_simulations) :
     leaf=select_leaf_node(root_node)
     teachers_agreement=expand_leaf(leaf,prompt)
-    reward=get_process_reward(prompt,golden_solution,leaf.generated_text)
+    reward=get_process_reward(prompt,golden_solution,leaf.generated_text, teacher_model1,teacher_model2,teacher_model3,tokenizer1,tokenizer2,tokenizer3)
     backpropagte(leaf,reward)
 
     seq_length=len(leaf.generated_text)
@@ -271,6 +324,7 @@ def mcts(prompt , num_simulations) :
 
     should_stop = level_guesser(seq_length, teachers_agreement, avg_value, node_count)
     if should_stop:
+<<<<<<< HEAD
       "Level Guesser triggered early stop at simulation"
       break
 
@@ -334,7 +388,14 @@ def calculate_readability_score(code_string: str) -> float:
   average_score = (score1 + score2 + score3) / 3.0
   return average_score
 
+=======
+       break
+>>>>>>> 65e943b (feat: implement LevelGuesserEnv class for MCTS training and add code extraction and complexity evaluation functions)
 
+  all_leaves = get_all_leaf_nodes(root_node)
+  node_count = len(all_leaves)
+  top_3_nodes = get_top_3_leaves(all_leaves)
+  return top_3_nodes, node_count
 
 def evaluate_code_quality(script_text: str) -> float:
   exec_time, peak_memory = calculate_metrics_using_subprocess(script_text)
