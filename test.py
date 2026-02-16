@@ -27,4 +27,4 @@ if __name__ == "__main__":
         sampling_params,
         use_tqdm=True,
       )
-      print(output)
+      print(output[0].outputs[0].text)

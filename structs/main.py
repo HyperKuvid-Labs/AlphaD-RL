@@ -16,15 +16,15 @@ tokenizer1 = teacher_model1.get_tokenizer()
 tokenizer2 = teacher_model2.get_tokenizer()
 tokenizer3 = teacher_model3.get_tokenizer()
 
-def do_unit_test(output1 :str,output2 :str,output3 :str):
-  return None
+def get_best_solution(o1, o2, o3):
+   # i need to test the codes over here for efficiency and correctness and then return the best one
+  pass
 
 def level_guesser(seq_length , agreement , avg_value , node_count):
   return True
 
-
 def generate_best_solution(prompt: str):
-  prompt+=" Generate the most efficient possible solution for this problem"
+  prompt+="Generate the most efficient possible solution for this problem, give only the code without any explanation or markdown formatting and make sure it is correct and optimal"
   params1 = SamplingParams(
       temperature=0.5,
       top_p=1.0,
@@ -44,7 +44,7 @@ def generate_best_solution(prompt: str):
   output2 = teacher_model2.generate(prompts=[prompt], sampling_params=params2)
   output3 = teacher_model3.generate(prompts=[prompt], sampling_params=params3)
 
-  best_output=do_unit_test(output1[0].outputs[0].text,output2[0].outputs[0].text,output3[0].outputs[0].text)
+  best_output=get_best_solution(output1[0].outputs[0].text,output2[0].outputs[0].text,output3[0].outputs[0].text)
   return best_output
 
 def get_process_reward(prompt : str, best_solution :str , partial_solution :str ) :
