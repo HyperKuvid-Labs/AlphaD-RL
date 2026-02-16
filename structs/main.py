@@ -570,7 +570,7 @@ if __name__ == "__main__":
 
   # initialize the teacher models and tokenizers (oracles for MCTS)
   tm1 = LLM("mistralai/Codestral-22B-v0.1", gpu_memory_utilization=0.2)
-  tm2 = LLM("Qwen/Qwen2.5-Coder-14B-Instruct-GGUF", gpu_memory_utilization=0.2)
+  tm2 = LLM("Qwen/Qwen3-Coder-30B-A3B-Instruct", gpu_memory_utilization=0.2)
   tm3 = LLM("deepseek-ai/DeepSeek-Coder-V2-Lite-Base", gpu_memory_utilization=0.2)
 
   tokenizer1 = tm1.get_tokenizer()
