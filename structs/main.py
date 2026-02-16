@@ -8,25 +8,6 @@ import torch
 from datasets import load_dataset
 from trl import GRPOTrainer, GRPOConfig
 
-model_name1=""
-model_name2=""
-model_name3=""
-c=1.414
-def load_model(model_name: str):
-    llm = LLM(model=model_name, gpu_memory_utilization=0.90)
-    return llm
-
-
-
-
-#As we are loading different models ... we better use multi gpu setup as we ketp the gpu_memory_utilization to 0.90
-teacher_model1=load_model(model_name1)
-teacher_model2=load_model(model_name2)
-teacher_model3=load_model(model_name3)
-tokenizer1 = teacher_model1.get_tokenizer()
-tokenizer2 = teacher_model2.get_tokenizer()
-tokenizer3 = teacher_model3.get_tokenizer()
-
 def extract_code(code):
   import re
   code = re.sub(r'```(?:python)?\n', '', code)
