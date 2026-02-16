@@ -1,23 +1,33 @@
 from vllm import LLM, SamplingParams
 import math
 import json
+import ast
 
-model_name=""
+model_name1=""
+model_name2=""
+model_name3=""
 c=1.414
 def load_model(model_name: str):
     llm = LLM(model=model_name, gpu_memory_utilization=0.90)
     return llm
 
 
-teacher_model1=load_model(model_name)
-teacher_model2=load_model(model_name)
-teacher_model3=load_model(model_name)
+
+
+#As we are loading different models ... we better use multi gpu setup as we ketp the gpu_memory_utilization to 0.90
+teacher_model1=load_model(model_name1)
+teacher_model2=load_model(model_name2)
+teacher_model3=load_model(model_name3)
 tokenizer1 = teacher_model1.get_tokenizer()
 tokenizer2 = teacher_model2.get_tokenizer()
 tokenizer3 = teacher_model3.get_tokenizer()
 
 def get_best_solution(o1, o2, o3):
    # i need to test the codes over here for efficiency and correctness and then return the best one
+  pass
+
+
+def calculate_metrics_using_subprocess(script_text: str):
   pass
 
 def level_guesser(seq_length , agreement , avg_value , node_count):
@@ -264,17 +274,78 @@ def mcts(prompt , num_simulations) :
       "Level Guesser triggered early stop at simulation"
       break
 
-    all_leaves = get_all_leaf_nodes(root_node)
+  all_leaves = get_all_leaf_nodes(root_node)
 
-    top_3_nodes = get_top_3_leaves(all_leaves)
+  top_3_nodes = get_top_3_leaves(all_leaves)
 
-    return top_3_nodes
+  return top_3_nodes
+
+
+def calculate_cyclomatic_complexity(code_string: str) -> int:
+    complexity_score = 1
+    try:
+        tree = ast.parse(code_string)
+    except SyntaxError:
+        return 100
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.If, ast.For, ast.While, ast.ExceptHandler, ast.BoolOp)):
+            complexity_score += 1
+
+    return complexity_score
+
+
+def calculate_readability_score(code_string: str) -> float:
+  prompt = f"""You are an expert Python code reviewer. Evaluate the following code based on readability, clear variable naming, and overall elegance.
+  Score it on a scale from 1 to 10, where 1 is unreadable spaghetti code and 10 is perfectly clean, production-ready code.
+
+  Code to Evaluate:
+  {code_string}
+
+  CRITICAL INSTRUCTIONS:
+  Output ONLY a single integer between 1 and 10. Do not output any text, markdown, explanation, or punctuation. Just the number.
+  """
+
+  params = SamplingParams(
+      temperature=0.1,
+      top_p=1.0,
+      max_tokens=5
+  )
+  output1 = teacher_model1.generate(prompts=[prompt], sampling_params=params)
+  output2 = teacher_model2.generate(prompts=[prompt], sampling_params=params)
+  output3 = teacher_model3.generate(prompts=[prompt], sampling_params=params)
+
+  raw_text1 = output1[0].outputs[0].text
+  raw_text2 = output2[0].outputs[0].text
+  raw_text3 = output3[0].outputs[0].text
+
+  try:
+    score1 = float(raw_text1.strip())
+  except ValueError:
+    score1 = 0.0
+  try:
+    score2 = float(raw_text2.strip())
+  except ValueError:
+    score2 = 0.0
+  try:
+    score3 = float(raw_text3.strip())
+  except ValueError:
+    score3 = 0.0
+
+  average_score = (score1 + score2 + score3) / 3.0
+  return average_score
 
 
 
 def evaluate_code_quality(script_text: str) -> float:
-  "this functions is to evaluate the best code on the final 3"
-  return 0
+  exec_time, peak_memory = calculate_metrics_using_subprocess(script_text)
+  cyclomatic_complexity = calculate_cyclomatic_complexity(script_text)
+  readability_score = calculate_readability_score(script_text)
+  time_score = 1.0 / (1.0 + exec_time)
+  mem_score = 1.0 / (1.0 + math.log10(peak_memory + 1.0))
+  comp_score = 1.0 / cyclomatic_complexity
+  read_score = readability_score / 10.0
+  final_quality_score = (0.40 * time_score) + (0.20 * mem_score) + (0.20 * comp_score) + (0.20 * read_score)
+  return final_quality_score
 
 
 def finish_and_extract_dpo(prompt: str, top_3_nodes: list, llm1, llm2, llm3, dataset_path="dpo_dataset.jsonl"):
@@ -306,16 +377,13 @@ def finish_and_extract_dpo(prompt: str, top_3_nodes: list, llm1, llm2, llm3, dat
         score2 = evaluate_code_quality(script2)
         score3 = evaluate_code_quality(script3)
 
-        best_script_for_node = max(
+        best_tuple_for_node = max(
             [(script1, score1), (script2, score2), (script3, score3)],
             key=lambda x: x[1]
-        )[0]
+        )
 
-        final_3_scripts.append(best_script_for_node)
-
-    scored_finals = [(script, evaluate_code_quality(script)) for script in final_3_scripts]
-
-    scored_finals.sort(key=lambda x: x[1], reverse=True)
+        final_3_scripts.append(best_tuple_for_node)
+    scored_finals = sorted(final_3_scripts, key=lambda x: x[1], reverse=True)
 
     chosen_script = scored_finals[0][0]
     rejected_script = scored_finals[-1][0]
