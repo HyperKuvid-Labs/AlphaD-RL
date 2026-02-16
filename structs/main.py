@@ -1,7 +1,6 @@
-from sre_parse import Tokenizer
 from vllm import LLM, SamplingParams
 import math
-
+import json
 
 model_name=""
 c=1.414
@@ -16,6 +15,90 @@ teacher_model3=load_model(model_name)
 tokenizer1 = teacher_model1.get_tokenizer()
 tokenizer2 = teacher_model2.get_tokenizer()
 tokenizer3 = teacher_model3.get_tokenizer()
+
+def do_unit_test(output1 :str,output2 :str,output3 :str):
+  return None
+
+def level_guesser(seq_length , agreement , avg_value , node_count):
+  return True
+
+
+def generate_best_solution(prompt: str):
+  prompt+=" Generate the most efficient possible solution for this problem"
+  params1 = SamplingParams(
+      temperature=0.5,
+      top_p=1.0,
+      max_tokens=1024
+  )
+  params2 = SamplingParams(
+      temperature=0.5,
+      top_p=1.0,
+      max_tokens=1024
+  )
+  params3 = SamplingParams(
+      temperature=0.5,
+      top_p=1.0,
+      max_tokens=1024
+  )
+  output1 = teacher_model1.generate(prompts=[prompt], sampling_params=params1)
+  output2 = teacher_model2.generate(prompts=[prompt], sampling_params=params2)
+  output3 = teacher_model3.generate(prompts=[prompt], sampling_params=params3)
+
+  best_output=do_unit_test(output1[0].outputs[0].text,output2[0].outputs[0].text,output3[0].outputs[0].text)
+  return best_output
+
+def get_process_reward(prompt : str, best_solution :str , partial_solution :str ) :
+  final_prompt=f"""You are an expert code evaluator. Your job is to grade partial, incomplete code on a scale of -1.0 to 1.0 based on whether it is on the right track to solving the user's prompt.
+  User Prompt: {prompt}
+  Reference Solution (For context only): > {best_solution}
+  Partial Code to Evaluate: > {partial_solution}
+  CRITICAL INSTRUCTIONS:
+  Use the Reference Solution to understand the core logic required.
+  DO NOT penalize the Partial Code simply because it uses a different algorithm, different variable names, or a different valid approach than the Reference Solution.
+  Only penalize the Partial Code if it contains logic errors, syntax errors, or is going down a provably incorrect path.
+  Output only a float between -1.0 and 1.0.
+
+  Output Format:
+  You only ouput the float score without any additional text or explanation.Not even any labels or indentation. Just the number."""
+
+  params1 = SamplingParams(
+      temperature=0.1,
+      top_p=1.0,
+      max_tokens=10
+  )
+  params2 = SamplingParams(
+      temperature=0.1,
+      top_p=1.0,
+      max_tokens=10
+  )
+  params3 = SamplingParams(
+      temperature=0.1,
+      top_p=1.0,
+      max_tokens=10
+  )
+  output1 = teacher_model1.generate(prompts=[final_prompt], sampling_params=params1)
+  output2 = teacher_model2.generate(prompts=[final_prompt], sampling_params=params2)
+  output3 = teacher_model3.generate(prompts=[final_prompt], sampling_params=params3)
+
+  raw_text1 = output1[0].outputs[0].text
+  raw_text2 = output2[0].outputs[0].text
+  raw_text3 = output3[0].outputs[0].text
+
+  try:
+    score1 = float(raw_text1.strip())
+  except ValueError:
+    score1 = 0.0
+  try:
+    score2 = float(raw_text2.strip())
+  except ValueError:
+    score2 = 0.0
+  try:
+    score3 = float(raw_text3.strip())
+  except ValueError:
+    score3 = 0.0
+
+  average_score = (score1 + score2 + score3) / 3.0
+  return average_score
 
 class Node:
   def __init__(self,token_id,generated_text,parent):
@@ -57,11 +140,11 @@ def select_leaf_node(root_node):
 
 def expand_leaf(leaf_node,prompt: str):
   prompt=f"For this prompt {prompt} you have generated these texts untill this {leaf_node.generated_text} now generate the next token with this context"
-  generate_tokens=get_30_tokens(teacher_model1,teacher_model2,teacher_model3,prompt,tokenizer1,tokenizer2,tokenizer3)
+  generate_tokens,teachers_agreement=get_30_tokens(teacher_model1,teacher_model2,teacher_model3,prompt,tokenizer1,tokenizer2,tokenizer3)
   for token in generate_tokens:
     child_node=Node(token[0],leaf_node.generated_text+token[1],leaf_node)
     leaf_node.add_child(child_node)
-
+  return teachers_agreement
 
 def backpropagte(node , reward):
   node.visit_count+=1
@@ -71,8 +154,28 @@ def backpropagte(node , reward):
 
 
 
+def get_all_leaf_nodes(node):
+    if len(node.children) == 0:
+        return [node]
 
-def get_30_tokens(llm1: LLM, llm2: LLM, llm3: LLM,prompt: str , tokenizer1 : Tokenizer, tokenizer2 : Tokenizer, tokenizer3 : Tokenizer):
+    leaves = []
+    for child in node.children:
+        leaves.extend(get_all_leaf_nodes(child))
+
+    return leaves
+
+
+def get_top_3_leaves(leaf_nodes):
+    def get_average_reward(leaf):
+        if leaf.visit_count == 0:
+            return -float('inf')
+        return leaf.value / leaf.visit_count
+    sorted_leaves = sorted(leaf_nodes, key=get_average_reward, reverse=True)
+    return sorted_leaves[:3]
+
+
+
+def get_30_tokens(llm1: LLM, llm2: LLM, llm3: LLM,prompt: str , tokenizer1 , tokenizer2 , tokenizer3 ):
     vocab_size1 = tokenizer1.vocab_size
     vocab_size2 = tokenizer2.vocab_size
     vocab_size3 = tokenizer3.vocab_size
@@ -131,18 +234,99 @@ def get_30_tokens(llm1: LLM, llm2: LLM, llm3: LLM,prompt: str , tokenizer1 : Tok
     bottom5_3 = format_decoded_list(sorted_logprobs3[:5], tokenizer3)
     top5_3 = format_decoded_list(sorted_logprobs3[-5:][::-1], tokenizer3)
 
-    return top5_1 + bottom5_1 + top5_2 + bottom5_2 + top5_3 + bottom5_3
+    teachers_agreemnet=(top5_1[0][0]==top5_2[0][0]==top5_3[0][0])
+
+    return [top5_1 + bottom5_1 + top5_2 + bottom5_2 + top5_3 + bottom5_3, teachers_agreemnet]
 
 
 
 def mcts(prompt , num_simulations) :
   root_node=Node(token_id=None,generated_text="",parent=None)
-
+  golden_solution=generate_best_solution(prompt)
   for _ in range(num_simulations) :
     leaf=select_leaf_node(root_node)
-    expand_leaf(leaf,prompt)
-    reward=0.5 # dummy
+    teachers_agreement=expand_leaf(leaf,prompt)
+    reward=get_process_reward(prompt,golden_solution,leaf.generated_text)
     backpropagte(leaf,reward)
 
-  return root_node
+    seq_length=len(leaf.generated_text)
+    if leaf.parent is not None:
+      siblings = leaf.parent.children
+      node_count = len(siblings)
+      total_value = sum(sibling.value for sibling in siblings)
+      avg_value = total_value / node_count if node_count > 0 else 0.0
+    else:
+      node_count = len(leaf.children)
+      avg_value = leaf.value
 
+    should_stop = level_guesser(seq_length, teachers_agreement, avg_value, node_count)
+    if should_stop:
+      "Level Guesser triggered early stop at simulation"
+      break
+
+    all_leaves = get_all_leaf_nodes(root_node)
+
+    top_3_nodes = get_top_3_leaves(all_leaves)
+
+    return top_3_nodes
+
+
+
+def evaluate_code_quality(script_text: str) -> float:
+  "this functions is to evaluate the best code on the final 3"
+  return 0
+
+
+def finish_and_extract_dpo(prompt: str, top_3_nodes: list, llm1, llm2, llm3, dataset_path="dpo_dataset.jsonl"):
+    params = SamplingParams(
+        temperature=0.2,
+        top_p=0.95,
+        max_tokens=1024
+    )
+
+    continuation_prompts = []
+    for node in top_3_nodes:
+        formatted_prompt = f"{prompt}\n\nContinue and complete the following code without repeating what is already written:\n{node.generated_text}"
+        continuation_prompts.append(formatted_prompt)
+
+    outputs1 = llm1.generate(prompts=continuation_prompts, sampling_params=params)
+    outputs2 = llm2.generate(prompts=continuation_prompts, sampling_params=params)
+    outputs3 = llm3.generate(prompts=continuation_prompts, sampling_params=params)
+
+    final_3_scripts = []
+
+    for i in range(len(top_3_nodes)):
+        partial_code = top_3_nodes[i].generated_text
+
+        script1 = partial_code + outputs1[i].outputs[0].text
+        script2 = partial_code + outputs2[i].outputs[0].text
+        script3 = partial_code + outputs3[i].outputs[0].text
+
+        score1 = evaluate_code_quality(script1)
+        score2 = evaluate_code_quality(script2)
+        score3 = evaluate_code_quality(script3)
+
+        best_script_for_node = max(
+            [(script1, score1), (script2, score2), (script3, score3)],
+            key=lambda x: x[1]
+        )[0]
+
+        final_3_scripts.append(best_script_for_node)
+
+    scored_finals = [(script, evaluate_code_quality(script)) for script in final_3_scripts]
+
+    scored_finals.sort(key=lambda x: x[1], reverse=True)
+
+    chosen_script = scored_finals[0][0]
+    rejected_script = scored_finals[-1][0]
+    dpo_pair = {
+        "prompt": prompt,
+        "chosen": chosen_script,
+        "rejected": rejected_script
+    }
+
+    with open(dataset_path, "a") as f:
+        f.write(json.dumps(dpo_pair) + "\n")
+
+
+    return dpo_pair
