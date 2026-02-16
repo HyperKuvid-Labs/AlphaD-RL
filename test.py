@@ -1,59 +1,30 @@
+import torch
 from vllm import LLM, SamplingParams
 
+prompts = [
+    "Reverse a string without using built-in reverse functions",
+    "Check if two strings are anagrams",
+    "Find the missing number in 1 to n (array contains 1..n except one number)",
+    "Longest substring without repeating characters",
+    "Product of array except self (no division allowed)",
+    "3Sum (find all unique triplets that sum to zero)",
+    "LRU Cache (implement with O(1) get and put)",
+    "Number of islands (grid of '1's and '0's)",
+    "Coin change (minimum number of coins needed to make amount)",
+    "Trapping rain water (given height array, compute trapped water)"
+]
 
-model_name=""
-prompt=""
+if __name__ == "__main__":
+  models = ["Qwen/Qwen3-Coder-30B-A3B-Instruct", "deepseek-ai/DeepSeek-Coder-V2-Lite-Instruct", "openai/gpt-oss-20b"]
 
-def load_model(model_name: str):
-    llm = LLM(model=model_name, gpu_memory_utilization=0.90)
-    return llm
+  for model in models:
+    llm = LLM(model)
+    sampling_params = SamplingParams(temperature=0.7)
 
-
-teacher_model1=load_model(model_name)
-teacher_model2=load_model(model_name)
-teacher_model3=load_model(model_name)
-
-
-def get_30_tokens(llm1: LLM, llm2: LLM, llm3: LLM,prompt: str):
-    vocab_size = llm1.get_tokenizer().vocab_size
-    params = SamplingParams(
-        temperature=0.5,
-        top_p=1.0,
-        max_tokens=1,
-        logprobs=vocab_size
-    )
-
-    output1 = llm1.generate(prompts=[prompt], sampling_params=params)
-    output2 = llm2.generate(prompts=[prompt], sampling_params=params)
-    output3 = llm3.generate(prompts=[prompt], sampling_params=params)
-    #First Prompt -> First Generated Sequence -> First Generated Token
-    token_logprobs_dict1 = output1[0].outputs[0].logprobs[0]
-    token_logprobs_dict2 = output2[0].outputs[0].logprobs[0]
-    token_logprobs_dict3 = output3[0].outputs[0].logprobs[0]
-
-    #Convert the dictionary to a list and sort it by logprob value
-    sorted_logprobs1 = sorted(
-        [(token_id, lp_obj.logprob) for token_id, lp_obj in token_logprobs_dict1.items()],
-        key=lambda x: x[1]
-    )
-
-    sorted_logprobs2 = sorted(
-        [(token_id, lp_obj.logprob) for token_id, lp_obj in token_logprobs_dict2.items()],
-        key=lambda x: x[1]
-    )
-
-    sorted_logprobs3 = sorted(
-        [(token_id, lp_obj.logprob) for token_id, lp_obj in token_logprobs_dict3.items()],
-        key=lambda x: x[1]
-    )
-
-    bottom5_logprobs1 = sorted_logprobs1[:5]
-    top5_logprobs1 = sorted_logprobs1[-5:][::-1]
-
-    bottom5_logprobs2 = sorted_logprobs2[:5]
-    top5_logprobs2 = sorted_logprobs2[-5:][::-1]
-
-    bottom5_logprobs3 = sorted_logprobs3[:5]
-    top5_logprobs3 = sorted_logprobs3[-5:][::-1]
-
-    return top5_logprobs1+bottom5_logprobs1+top5_logprobs2+bottom5_logprobs2+top5_logprobs3+bottom5_logprobs3
+    for prompt in prompts:
+      output = llm.generate(
+        prompt,
+        sampling_params,
+        use_tqdm=True,
+      )
+      print(output)
