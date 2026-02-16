@@ -569,9 +569,9 @@ if __name__ == "__main__":
   dataset = load_dataset("openai/openai_humaneval", split="test")
 
   # initialize the teacher models and tokenizers (oracles for MCTS)
-  tm1 = LLM("Qwen/Qwen3-Coder-30B-A3B-Instruct", quantization="awq", gpu_memory_utilization=0.2)
-  tm2 = LLM("deepseek-ai/DeepSeek-Coder-V2-Lite-Instruct", quantization="awq", gpu_memory_utilization=0.2)
-  tm3 = LLM("openai/gpt-oss-20b", quantization="awq", gpu_memory_utilization=0.2)
+  tm1 = LLM("unsloth/gpt-oss-20b-GGUF", gpu_memory_utilization=0.2)
+  tm2 = LLM("unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF", gpu_memory_utilization=0.2)
+  tm3 = LLM("deepseek-ai/DeepSeek-Coder-V2-Lite-Base", gpu_memory_utilization=0.2)
 
   tokenizer1 = tm1.get_tokenizer()
   tokenizer2 = tm2.get_tokenizer()
