@@ -301,9 +301,56 @@ def get_30_tokens(llm1: LLM, llm2: LLM, llm3: LLM,prompt: str , tokenizer1 , tok
 
     return [top5_1 + bottom5_1 + top5_2 + bottom5_2 + top5_3 + bottom5_3, teachers_agreemnet]
 
+def get_drift_reward(min_len, avg_len, max_len, lengths):
+  """
+  Calculates a reward based on the internal consistency (variance) of the batch.
 
+  Formula:
+      R = 1 - 2 * (stdev / max_tolerable_stdev)^2
 
-def mcts(prompt , num_simulations, teacher_model1,teacher_model2,teacher_model3, params1, params2, params3, tokenizer1, tokenizer2, tokenizer3) :
+  Where:
+      stdev = standard deviation of the input lengths
+      max_tolerable_stdev = derived from the range (approx (max-min)/2)
+
+  ---------------------------------------------------------------------------
+  THEORETICAL JUSTIFICATION & FOUNDATION
+  ---------------------------------------------------------------------------
+
+  1. MINIMIZING VARIATION (The "Why"):
+    Since we lack a single target, we evaluate the group's "tightness".
+    We treat the batch as a process and measure its stability.
+    - Reward 1.0: Zero variance (all lengths are identical).
+    - Reward -1.0: Maximum variance (points are split between min and max).
+
+  2. ACADEMIC REFERENCES:
+
+    A. Shewhart Cycle & Control Charts (SPC)
+        - Source: Shewhart, W. A. (1931). "Economic Control of Quality of
+          Manufactured Product".
+        - Concept: Shewhart defined "control" not as hitting a number, but as
+          minimizing variance ($\sigma$). A process in a state of statistical
+          control has a stable, minimized standard deviation.
+
+    B. Coefficient of Variation (Pearson)
+        - Source: Pearson, K. (1896). "Mathematical Contributions to the
+          Theory of Evolution".
+        - Concept: Using relative dispersion ($\sigma / \mu$) ensures the
+          reward scales correctly regardless of whether the lengths are
+          tiny (0.01) or huge (1000).
+
+  ---------------------------------------------------------------------------
+  """
+  std_len = math.sqrt(sum((l - avg_len) ** 2 for lens in lengths for l in lens) / (3 * len(lengths)))
+
+  max_std = (max_len - min_len) / 2.0
+  if max_std == 0:
+      return 1.0
+
+  normalized_std = std_len / max_std
+  reward = 1.0 - 2.0 * (normalized_std ** 2)
+  return max(-1.0, min(1.0, reward))
+
+def mcts(prompt, test, entrypoint, num_simulations, teacher_model1,teacher_model2,teacher_model3, params1, params2, params3, tokenizer1, tokenizer2, tokenizer3) :
   root_node=Node(token_id=None,generated_text="",parent=None)
   golden_solution=generate_best_solution(prompt, teacher_model1,teacher_model2,teacher_model3, params1, params2, params3)
   for _ in range(num_simulations) :
@@ -324,16 +371,84 @@ def mcts(prompt , num_simulations, teacher_model1,teacher_model2,teacher_model3,
 
     should_stop = level_guesser(seq_length, teachers_agreement, avg_value, node_count)
     if should_stop:
-<<<<<<< HEAD
       "Level Guesser triggered early stop at simulation"
       break
 
-  all_leaves = get_all_leaf_nodes(root_node)
+    all_leaves = get_all_leaf_nodes(root_node)
+    num_leaves = len(all_leaves)
+    top_3_nodes = get_top_3_leaves(all_leaves)
 
-  top_3_nodes = get_top_3_leaves(all_leaves)
+    continuation_prompt = []
+    for node in top_3_nodes:
+      formatted_prompt = f"""### Context
+      {prompt}
 
-  return top_3_nodes
+      ### Partial Implementation
+      {node.generated_text}
 
+      ### Instructions
+      1. **Complete the code** starting exactly from where the partial implementation ends. Do NOT repeat the existing code.
+      2. **Integrate the Entrypoint**: Ensure the logic flows into the `{entrypoint}` function.
+      3. **Main Function & Testing**: Append a `if __name__ == "__main__":` block.
+      4. **Validation**: Use the following test cases: {test}.
+      5. **Output Format**: The script must conclude by printing the exact string: "Passed X out of Y test cases".
+
+      ### Completion:"""
+      continuation_prompt.append(formatted_prompt)
+
+    outputs1 = teacher_model1.generate(prompts=continuation_prompt, sampling_params=params1)
+    outputs2 = teacher_model2.generate(prompts=continuation_prompt, sampling_params=params2)
+    outputs3 = teacher_model3.generate(prompts=continuation_prompt, sampling_params=params3)
+
+    lengths = []
+    test_passed_reward = 1.0
+    for i in range(len(top_3_nodes)):
+      script1 = outputs1[i].outputs[0].text
+      script2 = outputs2[i].outputs[0].text
+      script3 = outputs3[i].outputs[0].text
+
+      import os
+      os.makedirs("temp_scripts_mcts", exist_ok=True)
+      count_passed = 0
+      with open(f"temp_scripts_mcts/script1_node{i}.py", "w") as f:
+        f.write(script1)
+      with open(f"temp_scripts_mcts/script2_node{i}.py", "w") as f:
+        f.write(script2)
+      with open(f"temp_scripts_mcts/script3_node{i}.py", "w") as f:
+        f.write(script3)
+
+      import subprocess
+
+      o1 = subprocess.run(["python", f"temp_scripts_mcts/script1_node{i}.py"], capture_output=True, text=True).stdout
+      o2 = subprocess.run(["python", f"temp_scripts_mcts/script2_node{i}.py"], capture_output=True, text=True).stdout
+      o3 = subprocess.run(["python", f"temp_scripts_mcts/script3_node{i}.py"], capture_output=True, text=True).stdout
+
+      for output in [o1, o2, o3]:
+        import re
+         # extract the number of test cases passed from the output
+        match = re.search(r"Passed\s+(\d+)\s+out\s+ of\s+(\d+)\s+test\s+cases", output)
+        if match:
+          passed = int(match.group(1))
+          total = int(match.group(2))
+          if passed == total:
+            count_passed += 1
+
+      if count_passed < 1 and test_passed_reward != -1.0:
+        test_passed_reward = -1.0
+
+      len1 = len(script1)
+      len2 = len(script2)
+      len3 = len(script3)
+
+      lengths.append((len1, len2, len3))
+
+    min_len = min(min(lens) for lens in lengths)
+    avg_len = sum(sum(lens) for lens in lengths) / (3 * len(lengths))
+    max_len = max(max(lens) for lens in lengths)
+
+    # reward for the completion length
+    cr = get_drift_reward(min_len, avg_len, max_len, lengths)
+    return top_3_nodes, num_leaves, cr, test_passed_reward
 
 def calculate_cyclomatic_complexity(code_string: str) -> int:
     complexity_score = 1
@@ -387,15 +502,6 @@ def calculate_readability_score(code_string: str) -> float:
 
   average_score = (score1 + score2 + score3) / 3.0
   return average_score
-
-=======
-       break
->>>>>>> 65e943b (feat: implement LevelGuesserEnv class for MCTS training and add code extraction and complexity evaluation functions)
-
-  all_leaves = get_all_leaf_nodes(root_node)
-  node_count = len(all_leaves)
-  top_3_nodes = get_top_3_leaves(all_leaves)
-  return top_3_nodes, node_count
 
 def evaluate_code_quality(script_text: str) -> float:
   exec_time, peak_memory = calculate_metrics_using_subprocess(script_text)
