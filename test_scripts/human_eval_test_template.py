@@ -187,5 +187,5 @@ def evaulate_model_on_humaneval(model_name):
   print(f"Model {model_name} passed {count_passed} out of {len(dataset)} problems")
 
 if __name__ == "__main__":
-  model_name = "Qwen/Qwen2.5-Coder-7B-Instruct"
+  model_name = "Qwen/Qwen2.5-Coder-3B"
   evaulate_model_on_humaneval(model_name)
