@@ -3,7 +3,6 @@ import math
 import json
 import ast
 from transformers import AutoTokenizer, AutoModelForCausalLM, TrainerCallback
-# from vllm import LLM, SamplingParams
 import torch
 from datasets import load_dataset
 from trl import GRPOTrainer, GRPOConfig
@@ -666,9 +665,8 @@ if __name__ == "__main__":
   # level_guesser student model (the one we're training with GRPO)
   student_model = AutoModelForCausalLM.from_pretrained(
       "Qwen/Qwen3-4B",
-      torch_dtype=torch.bfloat16,
       device_map="auto",
-      trust_remote_code=True  # For Qwen models
+      trust_remote_code=True
   )
   tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen3-4B")
   tokenizer.pad_token = tokenizer.eos_token  # Critical for padding in GRPO
@@ -707,7 +705,6 @@ if __name__ == "__main__":
           rewards.append(prune_error)
       return rewards
 
-  # GRPO config (tune these; vLLM for fast generation during training)
   config = GRPOConfig(
       num_generations=4,          # 4 completions per prompt (for relative advantages)
       max_prompt_length=512,      # Adjust based on your prompts
@@ -727,10 +724,17 @@ if __name__ == "__main__":
       report_to="tensorboard",  # Or "wandb"/"tensorboard"
       logging_steps=10,
       output_dir="./grpo_output",  # Where checkpoints and logs go
+      loss_type="dapo",
+      epsilon=0.3, # clip range thing, 1+ε, 1-ε
+      beta=1.0, # kl coeff
+      delta=1.3, # double clipping, idea from INTELLECT-2
+
+      log_completions=True, # log a pair of (prompt, completion) every logging_steps
+
+      # multi_objective_aggregation="normalize_then_sum" # gdpo style
+      # cannot use this, as it is available only in trl>=0.27.0 but for that we need vlm<0.13.0, and if i pin vllm==0.12.0, it requires torch<=2.9.0, but im currently using torch >=2.9.1, so thought og not changing the whole cycle
   )
 
-  # Initialize the trainer with SEPARATE reward_funcs
-  # GRPO will call BOTH on the same batch, sum their rewards (or use reward_weights=[1.0, 1.0] in config)
   trainer = GRPOTrainer(
       model=student_model,                    # The level_guesser we're training
       processing_class=tokenizer,             # Tokenizer for the student
