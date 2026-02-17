@@ -18,7 +18,7 @@ if __name__ == "__main__":
   models = ["bigcode/starcoder2-15b", "Qwen/Qwen2.5-Coder-14B-Instruct", "ServiceNow-AI/Apriel-1.5-15b-Thinker"]
 
   for model in models:
-    llm = LLM(model, gpu_memory_utilization=0.3)
+    llm = LLM(model, gpu_memory_utilization=0.3, max_model_len=4096)
     sampling_params = SamplingParams(temperature=0.7)
 
     for prompt in prompts:
