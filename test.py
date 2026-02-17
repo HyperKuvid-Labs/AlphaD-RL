@@ -15,7 +15,7 @@ prompts = [
 ]
 
 if __name__ == "__main__":
-  models = ["Qwen/Qwen3-Coder-30B-A3B-Instruct", "deepseek-ai/DeepSeek-Coder-V2-Lite-Instruct", "openai/gpt-oss-20b"]
+  models = ["mistralai/Codestral-22B-v0.1", "Qwen/Qwen3-Coder-30B-A3B-Instruct", "deepseek-ai/DeepSeek-Coder-V2-Lite-Base"]
 
   for model in models:
     llm = LLM(model)

@@ -45,6 +45,8 @@ def get_best_time_complexity(output1, output2, output3):
   best_index = values.index(min_value)
   return best_index
 
+c = 1.414
+
 def get_best_solution(o1, o2, o3):
   # i need to test the codes over here for efficiency and correctness and then return the best one
   # so we'll have the code with the time complexity measurement, just need to ensure the code is clean with no ```
@@ -189,7 +191,7 @@ def select_leaf_node(root_node):
 
 
 
-def expand_leaf(leaf_node,prompt: str):
+def expand_leaf(leaf_node,prompt: str, teacher_model1,teacher_model2,teacher_model3,tokenizer1,tokenizer2,tokenizer3):
   prompt=f"For this prompt {prompt} you have generated these texts untill this {leaf_node.generated_text} now generate the next token with this context"
   generate_tokens,teachers_agreement=get_30_tokens(teacher_model1,teacher_model2,teacher_model3,prompt,tokenizer1,tokenizer2,tokenizer3)
   for token in generate_tokens:
@@ -341,7 +343,7 @@ def mcts(prompt, test, entrypoint, num_simulations, teacher_model1,teacher_model
   golden_solution=generate_best_solution(prompt, teacher_model1,teacher_model2,teacher_model3, params1, params2, params3)
   for _ in range(num_simulations) :
     leaf=select_leaf_node(root_node)
-    teachers_agreement=expand_leaf(leaf,prompt)
+    teachers_agreement=expand_leaf(leaf,prompt, teacher_model1,teacher_model2,teacher_model3,prompt,tokenizer1,tokenizer2,tokenizer3)
     reward=get_process_reward(prompt,golden_solution,leaf.generated_text, teacher_model1,teacher_model2,teacher_model3,tokenizer1,tokenizer2,tokenizer3)
     backpropagte(leaf,reward)
 
@@ -449,56 +451,56 @@ def calculate_cyclomatic_complexity(code_string: str) -> int:
     return complexity_score
 
 
-def calculate_readability_score(code_string: str) -> float:
-  prompt = f"""You are an expert Python code reviewer. Evaluate the following code based on readability, clear variable naming, and overall elegance.
-  Score it on a scale from 1 to 10, where 1 is unreadable spaghetti code and 10 is perfectly clean, production-ready code.
+# def calculate_readability_score(code_string: str) -> float:
+#   prompt = f"""You are an expert Python code reviewer. Evaluate the following code based on readability, clear variable naming, and overall elegance.
+#   Score it on a scale from 1 to 10, where 1 is unreadable spaghetti code and 10 is perfectly clean, production-ready code.
 
-  Code to Evaluate:
-  {code_string}
+#   Code to Evaluate:
+#   {code_string}
 
-  CRITICAL INSTRUCTIONS:
-  Output ONLY a single integer between 1 and 10. Do not output any text, markdown, explanation, or punctuation. Just the number.
-  """
+#   CRITICAL INSTRUCTIONS:
+#   Output ONLY a single integer between 1 and 10. Do not output any text, markdown, explanation, or punctuation. Just the number.
+#   """
 
-  params = SamplingParams(
-      temperature=0.1,
-      top_p=1.0,
-      max_tokens=5
-  )
-  output1 = teacher_model1.generate(prompts=[prompt], sampling_params=params)
-  output2 = teacher_model2.generate(prompts=[prompt], sampling_params=params)
-  output3 = teacher_model3.generate(prompts=[prompt], sampling_params=params)
+#   params = SamplingParams(
+#       temperature=0.1,
+#       top_p=1.0,
+#       max_tokens=5
+#   )
+#   output1 = teacher_model1.generate(prompts=[prompt], sampling_params=params)
+#   output2 = teacher_model2.generate(prompts=[prompt], sampling_params=params)
+#   output3 = teacher_model3.generate(prompts=[prompt], sampling_params=params)
 
-  raw_text1 = output1[0].outputs[0].text
-  raw_text2 = output2[0].outputs[0].text
-  raw_text3 = output3[0].outputs[0].text
+#   raw_text1 = output1[0].outputs[0].text
+#   raw_text2 = output2[0].outputs[0].text
+#   raw_text3 = output3[0].outputs[0].text
 
-  try:
-    score1 = float(raw_text1.strip())
-  except ValueError:
-    score1 = 0.0
-  try:
-    score2 = float(raw_text2.strip())
-  except ValueError:
-    score2 = 0.0
-  try:
-    score3 = float(raw_text3.strip())
-  except ValueError:
-    score3 = 0.0
+#   try:
+#     score1 = float(raw_text1.strip())
+#   except ValueError:
+#     score1 = 0.0
+#   try:
+#     score2 = float(raw_text2.strip())
+#   except ValueError:
+#     score2 = 0.0
+#   try:
+#     score3 = float(raw_text3.strip())
+#   except ValueError:
+#     score3 = 0.0
 
-  average_score = (score1 + score2 + score3) / 3.0
-  return average_score
+#   average_score = (score1 + score2 + score3) / 3.0
+#   return average_score
 
-def evaluate_code_quality(script_text: str) -> float:
-  exec_time, peak_memory = calculate_metrics_using_subprocess(script_text)
-  cyclomatic_complexity = calculate_cyclomatic_complexity(script_text)
-  readability_score = calculate_readability_score(script_text)
-  time_score = 1.0 / (1.0 + exec_time)
-  mem_score = 1.0 / (1.0 + math.log10(peak_memory + 1.0))
-  comp_score = 1.0 / cyclomatic_complexity
-  read_score = readability_score / 10.0
-  final_quality_score = (0.40 * time_score) + (0.20 * mem_score) + (0.20 * comp_score) + (0.20 * read_score)
-  return final_quality_score
+# def evaluate_code_quality(script_text: str) -> float:
+#   exec_time, peak_memory = calculate_metrics_using_subprocess(script_text)
+#   cyclomatic_complexity = calculate_cyclomatic_complexity(script_text)
+#   readability_score = calculate_readability_score(script_text)
+#   time_score = 1.0 / (1.0 + exec_time)
+#   mem_score = 1.0 / (1.0 + math.log10(peak_memory + 1.0))
+#   comp_score = 1.0 / cyclomatic_complexity
+#   read_score = readability_score / 10.0
+#   final_quality_score = (0.40 * time_score) + (0.20 * mem_score) + (0.20 * comp_score) + (0.20 * read_score)
+#   return final_quality_score
 
 
 def finish_and_extract_dpo(prompt: str, top_3_nodes: list, llm1, llm2, llm3, dataset_path="dpo_dataset.jsonl"):
@@ -519,23 +521,23 @@ def finish_and_extract_dpo(prompt: str, top_3_nodes: list, llm1, llm2, llm3, dat
 
     final_3_scripts = []
 
-    for i in range(len(top_3_nodes)):
-        partial_code = top_3_nodes[i].generated_text
+    # for i in range(len(top_3_nodes)):
+    #     partial_code = top_3_nodes[i].generated_text
 
-        script1 = partial_code + outputs1[i].outputs[0].text
-        script2 = partial_code + outputs2[i].outputs[0].text
-        script3 = partial_code + outputs3[i].outputs[0].text
+    #     script1 = partial_code + outputs1[i].outputs[0].text
+    #     script2 = partial_code + outputs2[i].outputs[0].text
+    #     script3 = partial_code + outputs3[i].outputs[0].text
 
-        score1 = evaluate_code_quality(script1)
-        score2 = evaluate_code_quality(script2)
-        score3 = evaluate_code_quality(script3)
+    #     score1 = evaluate_code_quality(script1)
+    #     score2 = evaluate_code_quality(script2)
+    #     score3 = evaluate_code_quality(script3)
 
-        best_tuple_for_node = max(
-            [(script1, score1), (script2, score2), (script3, score3)],
-            key=lambda x: x[1]
-        )
+    #     best_tuple_for_node = max(
+    #         [(script1, score1), (script2, score2), (script3, score3)],
+    #         key=lambda x: x[1]
+    #     )
 
-        final_3_scripts.append(best_tuple_for_node)
+    #     final_3_scripts.append(best_tuple_for_node)
     scored_finals = sorted(final_3_scripts, key=lambda x: x[1], reverse=True)
 
     chosen_script = scored_finals[0][0]
