@@ -15,10 +15,10 @@ prompts = [
 ]
 
 if __name__ == "__main__":
-  models = ["mistralai/Codestral-22B-v0.1", "Qwen/Qwen3-Coder-30B-A3B-Instruct", "deepseek-ai/DeepSeek-Coder-V2-Lite-Base"]
+  models = ["bigcode/starcoder2-15b", "Qwen/Qwen2.5-Coder-14B-Instruct", "ServiceNow-AI/Apriel-1.5-15b-Thinker"]
 
   for model in models:
-    llm = LLM(model, gpu_memory_utilization=0.25)
+    llm = LLM(model, gpu_memory_utilization=0.3)
     sampling_params = SamplingParams(temperature=0.7)
 
     for prompt in prompts:
