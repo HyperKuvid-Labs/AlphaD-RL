@@ -2,11 +2,31 @@ from vllm import LLM, SamplingParams
 import math
 import json
 import ast
-from transformers import AutoTokenizer, AutoModelForCausalLM
+from transformers import AutoTokenizer, AutoModelForCausalLM, TrainerCallback
 # from vllm import LLM, SamplingParams
 import torch
 from datasets import load_dataset
 from trl import GRPOTrainer, GRPOConfig
+import concurrent.futures
+import tempfile
+import os
+import re
+import subprocess
+
+class MCTSUpdateCallback(TrainerCallback):
+  def __init__(self, student_model, mcts_cache):
+    self.student_model = student_model
+    self.mcts_cache = mcts_cache
+
+  def on_save(self, args, state, control, **kwargs):
+    checkpoint_path = f"{args.output_dir}/checkpoint-{state.global_step}"
+    print(f"\n[MCTS Callback] Loading latest checkpoint for MCTS: {checkpoint_path}")
+
+    new_weights = AutoModelForCausalLM.from_pretrained(checkpoint_path).state_dict()
+    self.student_model.load_state_dict(new_weights)
+
+    self.mcts_cache.clear()
+    print("[MCTS Callback] Updated student model weights and cleared MCTS cache.")
 
 def extract_code(code):
   import re
@@ -47,12 +67,39 @@ def get_best_time_complexity(output1, output2, output3):
 
 c = 1.414
 
+# def execute_and_score(script_content, timeout=5):
+#     """Executes code and returns the ratio of passed tests."""
+#     # Use delete=False for compatibility with some Windows/Linux edge cases, manual remove later
+#     with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False) as tmp:
+#         tmp.write(script_content)
+#         tmp_path = tmp.name
+
+#     try:
+#         result = subprocess.run(
+#             ["python3", tmp_path],
+#             capture_output=True, text=True, timeout=timeout
+#         )
+#         # Extract "Passed X out of Y"
+#         match = re.search(r"Passed\s+(\d+)\s+out\s+of\s+(\d+)\s+test\s+cases", result.stdout)
+#         if match:
+#             passed, total = int(match.group(1)), int(match.group(2))
+#             return passed / total if total > 0 else 0.0
+#         return 0.0
+#     except (subprocess.TimeoutExpired, Exception):
+#         return -1.0 # Penalty for hang or crash
+#     finally:
+#         if os.path.exists(tmp_path):
+#             os.remove(tmp_path)
+# def parallel_test_solutions(scripts):
+#     """Runs multiple scripts in parallel across CPU cores."""
+#     with concurrent.futures.ProcessPoolExecutor() as executor:
+#         return list(executor.map(execute_and_score, scripts))
+
 def get_best_solution(o1, o2, o3):
   # i need to test the codes over here for efficiency and correctness and then return the best one
   # so we'll have the code with the time complexity measurement, just need to ensure the code is clean with no ```
   o1, o2, o3 = extract_code(o1), extract_code(o2), extract_code(o3)
-  import subprocess
-  import os
+
   os.makedirs("temp_best_solution", exist_ok=True)
   with open("temp_best_solution/solution1.py", "w") as f:
     f.write(o1)
@@ -72,8 +119,18 @@ def get_best_solution(o1, o2, o3):
 def calculate_metrics_using_subprocess(script_text: str):
   pass
 
-def level_guesser(seq_length , agreement , avg_value , node_count):
-  return True
+def level_guesser(model, tokenizer, seq_length, agreement, avg_value, node_count):
+    prompt = f"Length:{seq_length}, Agree:{agreement}, Value:{avg_value:.2f}, Nodes:{node_count}. Stop? (Yes/No):"
+    inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
+
+    # Critical: Use eval mode and no_grad to prevent training interference
+    model.eval()
+    with torch.no_grad():
+        out = model.generate(**inputs, max_new_tokens=3, temperature=0.1)
+    model.train()
+
+    response = tokenizer.decode(out[0], skip_special_tokens=True).lower()
+    return "yes" in response
 
 def generate_best_solution(prompt: str, tm1, tm2, tm3, params1, params2, params3):
   prompt+="Generate the most efficient possible solution for this problem, give only the code without any explanation or markdown formatting and make sure it is correct and optimal, and also the whole code from the import to the main function with time complexity measurement also, where it needs to print out the time complexity at the end of the code execution"
@@ -338,7 +395,7 @@ def get_drift_reward(min_len, avg_len, max_len, lengths):
   reward = 1.0 - 2.0 * (normalized_std ** 2)
   return max(-1.0, min(1.0, reward))
 
-def mcts(prompt, test, entrypoint, num_simulations, teacher_model1,teacher_model2,teacher_model3, params1, params2, params3, tokenizer1, tokenizer2, tokenizer3) :
+def mcts(prompt, test, entrypoint, num_simulations, teacher_model1,teacher_model2,teacher_model3, params1, params2, params3, tokenizer1, tokenizer2, tokenizer3,student_model, student_tokenizer):
   root_node=Node(token_id=None,generated_text="",parent=None)
   golden_solution=generate_best_solution(prompt, teacher_model1,teacher_model2,teacher_model3, params1, params2, params3)
   for _ in range(num_simulations) :
@@ -356,8 +413,7 @@ def mcts(prompt, test, entrypoint, num_simulations, teacher_model1,teacher_model
     else:
       node_count = len(leaf.children)
       avg_value = leaf.value
-
-    should_stop = level_guesser(seq_length, teachers_agreement, avg_value, node_count)
+    should_stop = level_guesser(student_model, student_tokenizer, len(leaf.generated_text), teachers_agreement, avg_value, node_count)
     if should_stop:
       "Level Guesser triggered early stop at simulation"
       break
@@ -410,6 +466,11 @@ def mcts(prompt, test, entrypoint, num_simulations, teacher_model1,teacher_model
       o1 = subprocess.run(["python", f"temp_scripts_mcts/script1_node{i}.py"], capture_output=True, text=True).stdout
       o2 = subprocess.run(["python", f"temp_scripts_mcts/script2_node{i}.py"], capture_output=True, text=True).stdout
       o3 = subprocess.run(["python", f"temp_scripts_mcts/script3_node{i}.py"], capture_output=True, text=True).stdout
+
+      # removing the temp files
+      subprocess.run(["rm", f"temp_scripts_mcts/script1_node{i}.py"])
+      subprocess.run(["rm", f"temp_scripts_mcts/script2_node{i}.py"])
+      subprocess.run(["rm", f"temp_scripts_mcts/script3_node{i}.py"])
 
       for output in [o1, o2, o3]:
         import re
@@ -616,10 +677,12 @@ if __name__ == "__main__":
   # This ensures MCTS runs ONLY ONCE per unique prompt across ALL reward calls and epochs
   mcts_cache = {}
 
+  mcts_callback = MCTSUpdateCallback(student_model, mcts_cache)
+
   def get_mcts_results(prompt, test, entry_point):
       if prompt not in mcts_cache:
           top_3_nodes, num_leaves, cr, test_passed_reward = mcts(
-              prompt, test, entry_point, 10, tm1, tm2, tm3, params1, params2, params3, tokenizer1, tokenizer2, tokenizer3
+              prompt, test, entry_point, 10, tm1, tm2, tm3, params1, params2, params3, tokenizer1, tokenizer2, tokenizer3,student_model, tokenizer
           )
           mcts_cache[prompt] = (top_3_nodes, num_leaves, cr, test_passed_reward)
       return mcts_cache[prompt]
@@ -655,18 +718,15 @@ if __name__ == "__main__":
       gradient_accumulation_steps=4,
       # Enable vLLM for generation (much faster than HF)
       use_vllm=True,
-      vllm_server_kwargs={
-          "model": "Qwen/Qwen3-4B",
-          "quantization": "awq",
-          "gpu_memory_utilization": 0.25,
-          "tensor_parallel_size": 1,
-      },
+      vllm_mode="colocate",
+      shuffle_dataset=True,
       # Generation params
       temperature=0.7,
       top_p=0.95,
       # Logging
       report_to="tensorboard",  # Or "wandb"/"tensorboard"
       logging_steps=10,
+      output_dir="./grpo_output",  # Where checkpoints and logs go
   )
 
   # Initialize the trainer with SEPARATE reward_funcs
@@ -677,10 +737,11 @@ if __name__ == "__main__":
       reward_funcs=[completion_reward_func, prune_reward_func],  # List for separate rewards!
       args=config,
       train_dataset=dataset,
+      callbacks=[mcts_callback]
   )
 
   # Start training! (MCTS runs on-demand via cache in the reward funcs)
-  trainer.train()
+  trainer.train(resume_from_checkpoint=True)
 
   # Optional: Save the trained level_guesser
   trainer.save_model("level_guesser_qwen3_4b")
