@@ -1,6 +1,6 @@
 import torch
 from unsloth import FastLanguageModel
-from vllm import LLM, SamplingParams
+import sglang as sgl
 
 prompts = [
     "reverse a string without using built-in reverse functions",
@@ -23,11 +23,13 @@ if __name__ == "__main__":
     ]
 
     for model_name in models:
-        llm = LLM(model_name, max_model_len=4096)
-        sampling_params = SamplingParams(temperature=0.7, top_p=0.9, max_tokens=512)
+        llm = sgl.Engine(model_path=model_name, mem_fraction_static=0.25, context_length=4096)
+        sampling_params = {"temperature": 0.5}
 
         for prompt in prompts:
             output = llm.generate(prompt, sampling_params)
-            print(f"prompt: {prompt}, resp: {output}, model: {model_name}")
+            print(f"prompt: {prompt}, resp: {output['text']}, model: {model_name}")
+
+        llm.shutdown()
 
     torch.cuda.empty_cache()
