@@ -33,6 +33,7 @@ if __name__ == "__main__":
                 max_seq_length     = 4096,
                 dtype              = None,
                 load_in_4bit       = False,
+                gpu_memory_utilization = 0.25
             )
 
             FastLanguageModel.for_inference(model)
