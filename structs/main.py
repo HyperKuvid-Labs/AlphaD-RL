@@ -11,6 +11,7 @@ import tempfile
 import os
 import re
 import subprocess
+from unsloth import FastLanguageModel
 
 class MCTSUpdateCallback(TrainerCallback):
   def __init__(self, student_model, mcts_cache):
@@ -122,11 +123,10 @@ def level_guesser(model, tokenizer, seq_length, agreement, avg_value, node_count
     prompt = f"Length:{seq_length}, Agree:{agreement}, Value:{avg_value:.2f}, Nodes:{node_count}. Stop? (Yes/No):"
     inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
 
-    # Critical: Use eval mode and no_grad to prevent training interference
-    model.eval()
+    FastLanguageModel.for_inference(model)
+
     with torch.no_grad():
-        out = model.generate(**inputs, max_new_tokens=3, temperature=0.1)
-    model.train()
+      out = model.generate(**inputs, temperature=0.0, top_p=1.0, use_cache=True)
 
     response = tokenizer.decode(out[0], skip_special_tokens=True).lower()
     return "yes" in response
@@ -663,13 +663,20 @@ if __name__ == "__main__":
   )
 
   # level_guesser student model (the one we're training with GRPO)
-  student_model = AutoModelForCausalLM.from_pretrained(
-      "Qwen/Qwen3-4B",
-      device_map="auto",
-      trust_remote_code=True
+  # student_model = AutoModelForCausalLM.from_pretrained(
+  #     "Qwen/Qwen3-4B",
+  #     device_map="auto",
+  #     trust_remote_code=True
+  # )
+  # tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen3-4B")
+  # tokenizer.pad_token = tokenizer.eos_token  # Critical for padding in GRPO
+  student_model, tokenizer = FastLanguageModel.from_pretrained(
+    model_name="Qwen/Qwen3-4B",
+    gpu_memory_utilization=0.25,
+    load_in_4bit=False,
+    max_seq_len=4096,
+    dtype="auto"
   )
-  tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen3-4B")
-  tokenizer.pad_token = tokenizer.eos_token  # Critical for padding in GRPO
 
   # Shared cache for MCTS results (prompt -> (top_3_nodes, num_leaves, cr, test_passed_reward))
   # This ensures MCTS runs ONLY ONCE per unique prompt across ALL reward calls and epochs
