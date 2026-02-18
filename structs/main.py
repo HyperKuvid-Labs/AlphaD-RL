@@ -687,7 +687,7 @@ if __name__ == "__main__":
   def get_mcts_results(prompt, test, entry_point):
       if prompt not in mcts_cache:
           top_3_nodes, num_leaves, cr, test_passed_reward = mcts(
-              prompt, test, entry_point, 10, tm1, tm2, tm3, params1, params2, params3, tokenizer1, tokenizer2, tokenizer3,student_model, tokenizer
+              prompt, test, entry_point, 10, tm1, tm2, tm3, params1, params2, params3, tokenizer1, tokenizer2, tokenizer3, mcts_callback.student_model, tokenizer
           )
           mcts_cache[prompt] = (top_3_nodes, num_leaves, cr, test_passed_reward)
       return mcts_cache[prompt]
