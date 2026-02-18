@@ -1,6 +1,6 @@
 # i think the env script was a waste of time, wecan directly call the mcts in here, and just start the training
 from transformers import AutoTokenizer, AutoModelForCausalLM
-from vllm import LLM, SamplingParams
+import sglang as sgl
 import torch
 from datasets import load_dataset
 from trl import GRPOTrainer, GRPOConfig
@@ -21,36 +21,17 @@ if __name__ == "__main__":
   dataset = load_dataset("openai/openai_humaneval", split="test")
 
   # initialize the teacher models and tokenizers (oracles for MCTS)
-  tm1 = LLM("Qwen/Qwen3-Coder-30B-A3B-Instruct", quantization="awq", gpu_memory_utilization=0.2)
-  tm2 = LLM("deepseek-ai/DeepSeek-Coder-V2-Lite-Instruct", quantization="awq", gpu_memory_utilization=0.2)
-  tm3 = LLM("openai/gpt-oss-20b", quantization="awq", gpu_memory_utilization=0.2)
+  tm1 = sgl.Engine(model_path="Qwen/Qwen3-Coder-30B-A3B-Instruct", mem_fraction_static=0.2, context_length=4096)
+  tm2 = sgl.Engine(model_path="deepseek-ai/DeepSeek-Coder-V2-Lite-Instruct", mem_fraction_static=0.2, context_length=4096)
+  tm3 = sgl.Engine(model_path="openai/gpt-oss-20b", mem_fraction_static=0.2, context_length=4096)
 
-  tokenizer1 = tm1.get_tokenizer()
-  tokenizer2 = tm2.get_tokenizer()
-  tokenizer3 = tm3.get_tokenizer()
+  tokenizer1 = AutoTokenizer.from_pretrained("Qwen/Qwen3-Coder-30B-A3B-Instruct")
+  tokenizer2 = AutoTokenizer.from_pretrained("deepseek-ai/DeepSeek-Coder-V2-Lite-Instruct")
+  tokenizer3 = AutoTokenizer.from_pretrained("openai/gpt-oss-20b")
 
-  vocab_size1 = tokenizer1.vocab_size
-  vocab_size2 = tokenizer2.vocab_size
-  vocab_size3 = tokenizer3.vocab_size
-
-  params1 = SamplingParams(
-      temperature=0.5,
-      top_p=1.0,
-      max_tokens=1,
-      logprobs=vocab_size1
-  )
-  params2 = SamplingParams(
-      temperature=0.5,
-      top_p=1.0,
-      max_tokens=1,
-      logprobs=vocab_size2
-  )
-  params3 = SamplingParams(
-      temperature=0.5,
-      top_p=1.0,
-      max_tokens=1,
-      logprobs=vocab_size3
-  )
+  params1 = {"temperature": 0.5, "top_p": 1.0, "max_new_tokens": 1, "return_logprob": True, "top_logprobs_num": 20}
+  params2 = {"temperature": 0.5, "top_p": 1.0, "max_new_tokens": 1, "return_logprob": True, "top_logprobs_num": 20}
+  params3 = {"temperature": 0.5, "top_p": 1.0, "max_new_tokens": 1, "return_logprob": True, "top_logprobs_num": 20}
 
   # level_guesser student model (the one we're training with GRPO)
   student_model = AutoModelForCausalLM.from_pretrained(
@@ -104,14 +85,8 @@ if __name__ == "__main__":
       num_train_epochs=2,         # Or max_steps=1000 for more control
       per_device_train_batch_size=1,  # Small for GPU mem (MCTS is heavy)
       gradient_accumulation_steps=4,
-      # Enable vLLM for generation (much faster than HF)
-      use_vllm=True,
-      vllm_server_kwargs={
-          "model": "Qwen/Qwen3-4B",
-          "quantization": "awq",
-          "gpu_memory_utilization": 0.25,
-          "tensor_parallel_size": 1,
-      },
+      # Enable SGLang for generation (much faster than HF)
+      use_sglang=True,
       # Generation params
       temperature=0.7,
       top_p=0.95,
