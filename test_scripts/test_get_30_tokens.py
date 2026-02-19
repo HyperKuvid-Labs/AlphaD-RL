@@ -30,13 +30,20 @@ if __name__ == "__main__":
 
     print("Loading model (shared weights, single instance)...")
     # Use a small mem_fraction_static so the engine fits in available GPU memory.
-    llm = AutoModelForCausalLM.from_pretrained(MODEL_NAME, device_map="auto", trust_remote_code=True)
-    tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
+    hf_tm1 = AutoModelForCausalLM.from_pretrained("openai/gpt-oss-20b", device_map="auto", trust_remote_code=True)
+    hf_tm2 = AutoModelForCausalLM.from_pretrained("Qwen/Qwen2.5-Coder-14B-Instruct", device_map="auto", trust_remote_code=True)
+    hf_tm3 = AutoModelForCausalLM.from_pretrained("deepseek-ai/DeepSeek-Coder-V2-Lite-Instruct", device_map="auto", trust_remote_code=True)
 
-    print(f"Vocab size: {tokenizer.vocab_size}")
+    tokenzer1 = AutoTokenizer.from_pretrained("openai/gpt-oss-20b")
+    tokenzer2 = AutoTokenizer.from_pretrained("Qwen/Qwen2.5-Coder-14B-Instruct")
+    tokenzer3 = AutoTokenizer.from_pretrained("deepseek-ai/DeepSeek-Coder-V2-Lite-Instruct")
+
+    print(f"gpt Vocab size: {tokenzer1.vocab_size}")
+    print(f"Qwen Vocab size: {tokenzer2.vocab_size}")
+    print(f"DeepSeek Vocab size: {tokenzer3.vocab_size}")
     print(f"Running get_30_tokens with prompt: {repr(TEST_PROMPT)}\n")
 
-    result = get_30_tokens(llm, llm, llm, TEST_PROMPT, tokenizer, tokenizer, tokenizer)
+    result = get_30_tokens(hf_tm1, hf_tm2, hf_tm3, TEST_PROMPT, tokenzer1, tokenzer2, tokenzer3)
 
     # ── Test 1: return value structure ──────────────────────────────────────────
     assert isinstance(result, list) and len(result) == 2, \

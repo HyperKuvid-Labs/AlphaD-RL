@@ -112,12 +112,16 @@ def get_best_solution(o1, o2, o3):
   so2 = subprocess.run(["python", "temp_best_solution/solution2.py"], capture_output=True, text=True)
   so3 = subprocess.run(["python", "temp_best_solution/solution3.py"], capture_output=True, text=True)
 
+  if so1.stderr:
+    print(f"Error in solution 1: {so1.stderr}")
+  if so2.stderr:
+    print(f"Error in solution 2: {so2.stderr}")
+  if so3.stderr:
+    print(f"Error in solution 3: {so3.stderr}")
+
+   # now we have the outputs and we can compare the time complexities and return the best one
   x = get_best_time_complexity(so1.stdout, so2.stdout, so3.stdout)
   return x
-
-
-def calculate_metrics_using_subprocess(script_text: str):
-  pass
 
 def level_guesser(model, tokenizer, seq_length, agreement, avg_value, node_count):
     prompt = f"Length:{seq_length}, Agree:{agreement}, Value:{avg_value:.2f}, Nodes:{node_count}. Stop? (Yes/No):"
@@ -235,8 +239,6 @@ def backpropagte(node , reward):
   if node.parent is not None :
     return backpropagte(node.parent , reward)
 
-
-
 def get_all_leaf_nodes(node):
     if len(node.children) == 0:
         return [node]
@@ -246,7 +248,6 @@ def get_all_leaf_nodes(node):
         leaves.extend(get_all_leaf_nodes(child))
 
     return leaves
-
 
 def get_top_3_leaves(leaf_nodes):
     def get_average_reward(leaf):
@@ -459,58 +460,6 @@ def calculate_cyclomatic_complexity(code_string: str) -> int:
             complexity_score += 1
 
     return complexity_score
-
-
-# def calculate_readability_score(code_string: str) -> float:
-#   prompt = f"""You are an expert Python code reviewer. Evaluate the following code based on readability, clear variable naming, and overall elegance.
-#   Score it on a scale from 1 to 10, where 1 is unreadable spaghetti code and 10 is perfectly clean, production-ready code.
-
-#   Code to Evaluate:
-#   {code_string}
-
-#   CRITICAL INSTRUCTIONS:
-#   Output ONLY a single integer between 1 and 10. Do not output any text, markdown, explanation, or punctuation. Just the number.
-#   """
-
-#   params = SamplingParams(
-#       temperature=0.1,
-#       top_p=1.0,
-#       max_tokens=5
-#   )
-#   output1 = teacher_model1.generate(prompts=[prompt], sampling_params=params)
-#   output2 = teacher_model2.generate(prompts=[prompt], sampling_params=params)
-#   output3 = teacher_model3.generate(prompts=[prompt], sampling_params=params)
-
-#   raw_text1 = output1[0].outputs[0].text
-#   raw_text2 = output2[0].outputs[0].text
-#   raw_text3 = output3[0].outputs[0].text
-
-#   try:
-#     score1 = float(raw_text1.strip())
-#   except ValueError:
-#     score1 = 0.0
-#   try:
-#     score2 = float(raw_text2.strip())
-#   except ValueError:
-#     score2 = 0.0
-#   try:
-#     score3 = float(raw_text3.strip())
-#   except ValueError:
-#     score3 = 0.0
-
-#   average_score = (score1 + score2 + score3) / 3.0
-#   return average_score
-
-# def evaluate_code_quality(script_text: str) -> float:
-#   exec_time, peak_memory = calculate_metrics_using_subprocess(script_text)
-#   cyclomatic_complexity = calculate_cyclomatic_complexity(script_text)
-#   readability_score = calculate_readability_score(script_text)
-#   time_score = 1.0 / (1.0 + exec_time)
-#   mem_score = 1.0 / (1.0 + math.log10(peak_memory + 1.0))
-#   comp_score = 1.0 / cyclomatic_complexity
-#   read_score = readability_score / 10.0
-#   final_quality_score = (0.40 * time_score) + (0.20 * mem_score) + (0.20 * comp_score) + (0.20 * read_score)
-#   return final_quality_score
 
 
 def finish_and_extract_dpo(prompt: str, top_3_nodes: list, llm1, llm2, llm3, dataset_path="dpo_dataset.jsonl"):
