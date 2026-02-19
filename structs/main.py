@@ -4,6 +4,7 @@ import json
 import ast
 from transformers import AutoTokenizer, AutoModelForCausalLM, TrainerCallback
 import torch
+import torch.nn.functional as F
 from datasets import load_dataset
 from trl import GRPOTrainer, GRPOConfig
 import concurrent.futures
@@ -129,7 +130,7 @@ def level_guesser(model, tokenizer, seq_length, agreement, avg_value, node_count
     return "yes" in response
 
 def generate_best_solution(prompt: str, tm1, tm2, tm3, params1, params2, params3):
-  prompt+="Generate the most efficient possible solution for this problem, give only the code without any explanation or markdown formatting and make sure it is correct and optimal, and also the whole code from the import to the main function with time complexity measurement also, where it needs to print out the time complexity at the end of the code execution"
+  prompt+="Generate the most efficient possible solution for this problem strictly in Python only, output absolutely nothing but the pure Python code itself without any explanations, comments, markdown, text, or extra words whatsoever—ensure the code is correct, optimal, and complete from all necessary imports to the main function or script, including code to measure and print the time complexity at the end of execution."
   params1 = {"temperature": 0.5, "top_p": 1.0, "max_new_tokens": 1024}
   params2 = {"temperature": 0.5, "top_p": 1.0, "max_new_tokens": 1024}
   params3 = {"temperature": 0.5, "top_p": 1.0, "max_new_tokens": 1024}
@@ -219,10 +220,9 @@ def select_leaf_node(root_node):
   return current_node
 
 
-
-def expand_leaf(leaf_node,prompt: str, teacher_model1,teacher_model2,teacher_model3,tokenizer1,tokenizer2,tokenizer3):
+def expand_leaf(leaf_node, prompt: str, hf_teacher1, hf_teacher2, hf_teacher3, tokenizer1, tokenizer2, tokenizer3):
   prompt=f"For this prompt {prompt} you have generated these texts untill this {leaf_node.generated_text} now generate the next token with this context"
-  generate_tokens,teachers_agreement=get_30_tokens(teacher_model1,teacher_model2,teacher_model3,prompt,tokenizer1,tokenizer2,tokenizer3)
+  generate_tokens,teachers_agreement=get_30_tokens(hf_teacher1,hf_teacher2,hf_teacher3,prompt,tokenizer1,tokenizer2,tokenizer3)
   for token in generate_tokens:
     child_node=Node(token[0],leaf_node.generated_text+token[1],leaf_node)
     leaf_node.add_child(child_node)
@@ -255,30 +255,30 @@ def get_top_3_leaves(leaf_nodes):
     sorted_leaves = sorted(leaf_nodes, key=get_average_reward, reverse=True)
     return sorted_leaves[:3]
 
+def get_next_token_logprobs_hf(model, tokenizer, prompt: str, top_k: int = 20):
+    inputs = tokenizer(prompt, return_tensors='pt').to(model.device)
+
+    with torch.no_grad():
+        outputs = model(**inputs)
+
+    # logits for the last prompt position -> distribution over next token
+    logits = outputs.logits[0, -1, :]           # shape: [vocab_size]
+    log_probs = F.log_softmax(logits, dim=-1)
+
+    top_log_probs, top_indices = torch.topk(log_probs, top_k)
+
+    result = []
+    for lp, idx in zip(top_log_probs.tolist(), top_indices.tolist()):
+        token_text = tokenizer.decode([idx])
+        result.append((idx, token_text, lp))
+
+    return result  # already sorted descending by logprob
+
+
 def get_30_tokens(llm1, llm2, llm3, prompt: str, tokenizer1, tokenizer2, tokenizer3):
-    # SGLang returns top-k logprobs via return_logprob + top_logprobs_num
-    # output['meta_info']['output_top_logprobs'][0] = list of [logprob, token_id, token_text]
-    # sorted descending by logprob (highest first) for the first generated token
-    params1 = {"temperature": 0.5, "top_p": 1.0, "max_new_tokens": 1, "return_logprob": True, "top_logprobs_num": 20}
-    params2 = {"temperature": 0.5, "top_p": 1.0, "max_new_tokens": 1, "return_logprob": True, "top_logprobs_num": 20}
-    params3 = {"temperature": 0.5, "top_p": 1.0, "max_new_tokens": 1, "return_logprob": True, "top_logprobs_num": 20}
-
-    output1 = llm1.generate(prompt, params1)
-    output2 = llm2.generate(prompt, params2)
-    output3 = llm3.generate(prompt, params3)
-
-    # SGLang output_top_logprobs: list per token of [logprob, token_id, token_text], sorted descending
-    top_logprobs1 = output1['meta_info']['output_top_logprobs'][0]
-    top_logprobs2 = output2['meta_info']['output_top_logprobs'][0]
-    top_logprobs3 = output3['meta_info']['output_top_logprobs'][0]
-
-    def format_sglang_logprobs(top_logprobs):
-        # Convert [logprob, token_id, token_text] -> (token_id, token_text, logprob)
-        return [(entry[1], entry[2], entry[0]) for entry in top_logprobs]
-
-    formatted1 = format_sglang_logprobs(top_logprobs1)  # highest logprob first
-    formatted2 = format_sglang_logprobs(top_logprobs2)
-    formatted3 = format_sglang_logprobs(top_logprobs3)
+    formatted1 = get_next_token_logprobs_hf(llm1, tokenizer1, prompt)  # highest logprob first
+    formatted2 = get_next_token_logprobs_hf(llm2, tokenizer2, prompt)
+    formatted3 = get_next_token_logprobs_hf(llm3, tokenizer3, prompt)
 
     top5_1 = formatted1[:5]
     bottom5_1 = formatted1[-5:][::-1]
@@ -342,12 +342,12 @@ def get_drift_reward(min_len, avg_len, max_len, lengths):
   reward = 1.0 - 2.0 * (normalized_std ** 2)
   return max(-1.0, min(1.0, reward))
 
-def mcts(prompt, test, entrypoint, num_simulations, teacher_model1,teacher_model2,teacher_model3, params1, params2, params3, tokenizer1, tokenizer2, tokenizer3,student_model, student_tokenizer):
+def mcts(prompt, test, entrypoint, num_simulations, teacher_model1, teacher_model2, teacher_model3, params1, params2, params3, tokenizer1, tokenizer2, tokenizer3, hf_teacher1, hf_teacher2, hf_teacher3, student_model, student_tokenizer):
   root_node=Node(token_id=None,generated_text="",parent=None)
   golden_solution=generate_best_solution(prompt, teacher_model1,teacher_model2,teacher_model3, params1, params2, params3)
   for _ in range(num_simulations) :
     leaf=select_leaf_node(root_node)
-    teachers_agreement=expand_leaf(leaf,prompt, teacher_model1,teacher_model2,teacher_model3,prompt,tokenizer1,tokenizer2,tokenizer3)
+    teachers_agreement=expand_leaf(leaf, prompt, hf_teacher1, hf_teacher2, hf_teacher3, tokenizer1, tokenizer2, tokenizer3)
     reward=get_process_reward(prompt,golden_solution,leaf.generated_text, teacher_model1,teacher_model2,teacher_model3,tokenizer1,tokenizer2,tokenizer3)
     backpropagte(leaf,reward)
 
@@ -574,7 +574,7 @@ if __name__ == "__main__":
   # load the dataset (HumanEval uses "test" split with 164 examples)
   dataset = load_dataset("openai/openai_humaneval", split="test")
 
-  # initialize the teacher models and tokenizers (oracles for MCTS)
+  # initialize the teacher models (sglang engines) for generation (completions, process reward, etc.)
   tm1 = sgl.Engine(model_path="openai/gpt-oss-20b", mem_fraction_static=0.25, context_length=4096)
   tm2 = sgl.Engine(model_path="Qwen/Qwen2.5-Coder-14B-Instruct", mem_fraction_static=0.25, context_length=4096)
   tm3 = sgl.Engine(model_path="deepseek-ai/DeepSeek-Coder-V2-Lite-Instruct", mem_fraction_static=0.25, context_length=4096)
@@ -583,9 +583,14 @@ if __name__ == "__main__":
   tokenizer2 = AutoTokenizer.from_pretrained("Qwen/Qwen2.5-Coder-14B-Instruct")
   tokenizer3 = AutoTokenizer.from_pretrained("deepseek-ai/DeepSeek-Coder-V2-Lite-Instruct")
 
-  params1 = {"temperature": 0.5, "top_p": 1.0, "max_new_tokens": 1, "return_logprob": True, "top_logprobs_num": 20}
-  params2 = {"temperature": 0.5, "top_p": 1.0, "max_new_tokens": 1, "return_logprob": True, "top_logprobs_num": 20}
-  params3 = {"temperature": 0.5, "top_p": 1.0, "max_new_tokens": 1, "return_logprob": True, "top_logprobs_num": 20}
+  # HF models used exclusively for next-token logprob computation in MCTS expansion
+  hf_tm1 = AutoModelForCausalLM.from_pretrained("openai/gpt-oss-20b", device_map="auto", trust_remote_code=True)
+  hf_tm2 = AutoModelForCausalLM.from_pretrained("Qwen/Qwen2.5-Coder-14B-Instruct", device_map="auto", trust_remote_code=True)
+  hf_tm3 = AutoModelForCausalLM.from_pretrained("deepseek-ai/DeepSeek-Coder-V2-Lite-Instruct", device_map="auto", trust_remote_code=True)
+
+  params1 = {"temperature": 0.5, "top_p": 1.0, "max_new_tokens": 1024}
+  params2 = {"temperature": 0.5, "top_p": 1.0, "max_new_tokens": 1024}
+  params3 = {"temperature": 0.5, "top_p": 1.0, "max_new_tokens": 1024}
 
   # level_guesser student model (the one we're training with GRPO)
   # student_model = AutoModelForCausalLM.from_pretrained(
@@ -615,7 +620,7 @@ if __name__ == "__main__":
   def get_mcts_results(prompt, test, entry_point):
       if prompt not in mcts_cache:
           top_3_nodes, num_leaves, cr, test_passed_reward = mcts(
-              prompt, test, entry_point, 10, tm1, tm2, tm3, params1, params2, params3, tokenizer1, tokenizer2, tokenizer3, mcts_callback.student_model, tokenizer
+              prompt, test, entry_point, 10, tm1, tm2, tm3, params1, params2, params3, tokenizer1, tokenizer2, tokenizer3, hf_tm1, hf_tm2, hf_tm3, mcts_callback.student_model, tokenizer
           )
           mcts_cache[prompt] = (top_3_nodes, num_leaves, cr, test_passed_reward)
       return mcts_cache[prompt]
