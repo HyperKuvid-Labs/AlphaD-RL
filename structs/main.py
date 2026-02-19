@@ -129,7 +129,7 @@ def level_guesser(model, tokenizer, seq_length, agreement, avg_value, node_count
     inputs = tokenizer(prompt, return_tensors="pt").to(device)
 
     with torch.no_grad():
-      out = model.generate(**inputs, temperature=0.0, top_p=1.0, use_cache=True)
+      out = model.generate(**inputs, do_sample=False, use_cache=True)
 
     response = tokenizer.decode(out[0], skip_special_tokens=True).lower()
     return "yes" in response
