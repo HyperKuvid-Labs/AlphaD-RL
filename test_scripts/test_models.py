@@ -19,7 +19,7 @@ if __name__ == "__main__":
     models = [
         "openai/gpt-oss-20b",
         "Qwen/Qwen2.5-Coder-14B-Instruct",
-        "DeepSeek-Coder-V2-Lite-Instruct"
+        "deepseek-ai/DeepSeek-Coder-V2-Lite-Instruct"
     ]
 
     for model_name in models:
