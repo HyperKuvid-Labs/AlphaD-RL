@@ -81,8 +81,17 @@ class HFEngineWrapper:
         top_p = params.get("top_p", 1.0)
 
         for prompt in prompts:
+            # Use chat template with thinking disabled so Qwen3 does not
+            # emit its chain-of-thought reasoning as part of the output.
+            messages = [{"role": "user", "content": prompt}]
+            formatted = self.tokenizer.apply_chat_template(
+                messages,
+                tokenize=False,
+                add_generation_prompt=True,
+                enable_thinking=False,   # suppresses <think>...</think> block
+            )
             inputs = self.tokenizer(
-                prompt, return_tensors="pt", truncation=True, max_length=1024
+                formatted, return_tensors="pt", truncation=True, max_length=2048
             ).to(self.device)
 
             do_sample = temperature > 0.0

@@ -135,7 +135,21 @@ def level_guesser(model, tokenizer, seq_length, agreement, avg_value, node_count
     return "yes" in response
 
 def generate_best_solution(prompt: str, tm1, tm2, tm3, params1, params2, params3):
-  prompt+="Generate the most efficient possible solution for this problem strictly in Python only, output absolutely nothing but the pure Python code itself without any explanations, comments, markdown, text, or extra words whatsoever—ensure the code is correct, optimal, and complete from all necessary imports to the main function or script, including code to measure and print the time complexity at the end of execution."
+  prompt = (
+      "[SYSTEM] You are a pure Python code output machine. "
+      "You MUST output ONLY valid Python source code — absolutely no prose, "
+      "no reasoning, no explanations, no comments, no markdown fences, "
+      "no preamble, and no postamble of any kind. "
+      "If you output anything other than valid Python syntax your response is wrong.\n"
+      "[TASK] " + prompt + "\n"
+      "Requirements:\n"
+      "1. Implement the most time-efficient algorithm possible.\n"
+      "2. The file must be completely self-contained (all imports included).\n"
+      "3. At the END of the file add exactly this block (replacing the complexity expression):\n"
+      "   import time as _t; _s=_t.time(); <call your function with sample args>; "
+      "   print(f'Time Complexity: O(<expression in n>)')\n"
+      "4. Output the Python code and NOTHING ELSE — not a single word outside the code."
+  )
   params1 = {"temperature": 0.5, "top_p": 1.0, "max_new_tokens": 1024}
   params2 = {"temperature": 0.5, "top_p": 1.0, "max_new_tokens": 1024}
   params3 = {"temperature": 0.5, "top_p": 1.0, "max_new_tokens": 1024}
