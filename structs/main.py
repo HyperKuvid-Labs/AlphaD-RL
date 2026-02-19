@@ -257,7 +257,8 @@ def get_top_3_leaves(leaf_nodes):
     return sorted_leaves[:3]
 
 def get_next_token_logprobs_hf(model, tokenizer, prompt: str, top_k: int = 20):
-    inputs = tokenizer(prompt, return_tensors='pt').to(model.device)
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    inputs = tokenizer(prompt, return_tensors='pt').to(device)
 
     with torch.no_grad():
         outputs = model(**inputs)
