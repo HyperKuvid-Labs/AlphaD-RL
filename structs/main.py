@@ -11,7 +11,6 @@ import tempfile
 import os
 import re
 import subprocess
-from unsloth import FastLanguageModel
 
 class MCTSUpdateCallback(TrainerCallback):
   def __init__(self, student_model, mcts_cache):
@@ -122,8 +121,6 @@ def calculate_metrics_using_subprocess(script_text: str):
 def level_guesser(model, tokenizer, seq_length, agreement, avg_value, node_count):
     prompt = f"Length:{seq_length}, Agree:{agreement}, Value:{avg_value:.2f}, Nodes:{node_count}. Stop? (Yes/No):"
     inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
-
-    FastLanguageModel.for_inference(model)
 
     with torch.no_grad():
       out = model.generate(**inputs, temperature=0.0, top_p=1.0, use_cache=True)
@@ -578,13 +575,13 @@ if __name__ == "__main__":
   dataset = load_dataset("openai/openai_humaneval", split="test")
 
   # initialize the teacher models and tokenizers (oracles for MCTS)
-  tm1 = sgl.Engine(model_path="bigcode/starcoder2-15b", mem_fraction_static=0.25, context_length=4096)
+  tm1 = sgl.Engine(model_path="openai/gpt-oss-20b", mem_fraction_static=0.25, context_length=4096)
   tm2 = sgl.Engine(model_path="Qwen/Qwen2.5-Coder-14B-Instruct", mem_fraction_static=0.25, context_length=4096)
-  tm3 = sgl.Engine(model_path="ServiceNow-AI/Apriel-1.5-15b-Thinker", mem_fraction_static=0.25, context_length=4096)
+  tm3 = sgl.Engine(model_path="DeepSeek-Coder-V2-Lite-Instruct", mem_fraction_static=0.25, context_length=4096)
 
-  tokenizer1 = AutoTokenizer.from_pretrained("bigcode/starcoder2-15b")
+  tokenizer1 = AutoTokenizer.from_pretrained("openai/gpt-oss-20b")
   tokenizer2 = AutoTokenizer.from_pretrained("Qwen/Qwen2.5-Coder-14B-Instruct")
-  tokenizer3 = AutoTokenizer.from_pretrained("ServiceNow-AI/Apriel-1.5-15b-Thinker")
+  tokenizer3 = AutoTokenizer.from_pretrained("DeepSeek-Coder-V2-Lite-Instruct")
 
   params1 = {"temperature": 0.5, "top_p": 1.0, "max_new_tokens": 1, "return_logprob": True, "top_logprobs_num": 20}
   params2 = {"temperature": 0.5, "top_p": 1.0, "max_new_tokens": 1, "return_logprob": True, "top_logprobs_num": 20}
@@ -598,13 +595,16 @@ if __name__ == "__main__":
   # )
   # tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen3-4B")
   # tokenizer.pad_token = tokenizer.eos_token  # Critical for padding in GRPO
-  student_model, tokenizer = FastLanguageModel.from_pretrained(
-    model_name="Qwen/Qwen3-4B",
-    gpu_memory_utilization=0.25,
-    load_in_4bit=False,
-    max_seq_len=4096,
-    dtype="auto"
-  )
+  # student_model, tokenizer = FastLanguageModel.from_pretrained(
+  #   model_name="Qwen/Qwen3-4B",
+  #   gpu_memory_utilization=0.25,
+  #   load_in_4bit=False,
+  #   max_seq_len=4096,
+  #   dtype="auto"
+  # )
+  student_model = AutoModelForCausalLM.from_pretrained("Qwen/Qwen3-4B", device_map="auto", trust_remote_code=True)
+  tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen3-4B")
+  tokenizer.pad_token = tokenizer.eos_token
 
   # Shared cache for MCTS results (prompt -> (top_3_nodes, num_leaves, cr, test_passed_reward))
   # This ensures MCTS runs ONLY ONCE per unique prompt across ALL reward calls and epochs
@@ -649,7 +649,6 @@ if __name__ == "__main__":
       per_device_train_batch_size=1,  # Small for GPU mem (MCTS is heavy)
       gradient_accumulation_steps=4,
       # Enable SGLang for generation (much faster than HF)
-      use_sglang=True,
       shuffle_dataset=True,
       # Generation params
       temperature=0.7,

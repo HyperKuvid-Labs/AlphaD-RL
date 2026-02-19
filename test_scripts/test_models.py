@@ -17,9 +17,9 @@ prompts = [
 
 if __name__ == "__main__":
     models = [
-        "bigcode/starcoder2-15b",
+        "openai/gpt-oss-20b",
         "Qwen/Qwen2.5-Coder-14B-Instruct",
-        "ServiceNow-AI/Apriel-1.5-15b-Thinker"
+        "DeepSeek-Coder-V2-Lite-Instruct"
     ]
 
     for model_name in models:
