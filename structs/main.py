@@ -277,10 +277,10 @@ def get_next_token_logprobs_hf(model, tokenizer, prompt: str, top_k: int = 20):
     return result  # already sorted descending by logprob
 
 
-def get_30_tokens(llm1, llm2, llm3, prompt: str, tokenizer1, tokenizer2, tokenizer3):
-    formatted1 = get_next_token_logprobs_hf(llm1, tokenizer1, prompt)  # highest logprob first
-    formatted2 = get_next_token_logprobs_hf(llm2, tokenizer2, prompt)
-    formatted3 = get_next_token_logprobs_hf(llm3, tokenizer3, prompt)
+def get_30_tokens(m1, m2, m3, prompt: str, tokenizer1, tokenizer2, tokenizer3):
+    formatted1 = get_next_token_logprobs_hf(m1, tokenizer1, prompt)  # highest logprob first
+    formatted2 = get_next_token_logprobs_hf(m2, tokenizer2, prompt)
+    formatted3 = get_next_token_logprobs_hf(m3, tokenizer3, prompt)
 
     top5_1 = formatted1[:5]
     bottom5_1 = formatted1[-5:][::-1]

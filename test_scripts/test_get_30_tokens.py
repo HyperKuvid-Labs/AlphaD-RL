@@ -16,10 +16,12 @@ What is tested:
 
 import sys
 import os
+
+import torch
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import sglang as sgl
-from transformers import AutoTokenizer
+from transformers import AutoTokenizer, AutoModelForCausalLM
 from structs.main import get_30_tokens
 
 if __name__ == "__main__":
@@ -28,11 +30,7 @@ if __name__ == "__main__":
 
     print("Loading model (shared weights, single instance)...")
     # Use a small mem_fraction_static so the engine fits in available GPU memory.
-    llm = sgl.Engine(
-        model_path=MODEL_NAME,
-        mem_fraction_static=0.6,
-        context_length=1024,
-    )
+    llm = AutoModelForCausalLM.from_pretrained(MODEL_NAME, device_map="auto", trust_remote_code=True)
     tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
 
     print(f"Vocab size: {tokenizer.vocab_size}")
