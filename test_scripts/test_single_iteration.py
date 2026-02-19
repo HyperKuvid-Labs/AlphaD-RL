@@ -5,7 +5,7 @@ Simulates ONE complete iteration of the training pipeline WITHOUT running GRPO:
 
   Stage 1 – Golden solution
       generate_best_solution() is called so the teachers propose and score
-      solutions to the test prompt.  We wrap the HF model with a thin
+      solutions to the test prompt.  We wrap each HF teacher model with a thin
       HFEngineWrapper that mirrors the sgl.Engine .generate() interface.
 
   Stage 2 – MCTS expansion
@@ -24,10 +24,17 @@ Simulates ONE complete iteration of the training pipeline WITHOUT running GRPO:
       level_guesser() runs Qwen3-4B (the student model) and returns a bool
       indicating whether MCTS should stop early.
 
-We use a single Qwen3-4B model for ALL roles (teacher + student) to avoid
-needing multiple GPU allocations.  The HFEngineWrapper converts the sgl.Engine
-call-signature  ``engine.generate([prompt], params)``  into HF generation so
-that generate_best_solution() and get_process_reward() work unchanged.
+Teacher models (mirrors the production config in structs/main.py):
+  tm1  – openai/gpt-oss-20b
+  tm2  – Qwen/Qwen2.5-Coder-14B-Instruct
+  tm3  – deepseek-ai/DeepSeek-Coder-V2-Lite-Instruct
+
+Student / level-guesser model:
+  Qwen/Qwen3-4B  (used ONLY in Stage 5)
+
+The HFEngineWrapper converts the sgl.Engine call-signature
+``engine.generate([prompt], params)`` into HF generation so that
+generate_best_solution() and get_process_reward() work unchanged.
 
 What is tested:
   1. HFEngineWrapper returns a list whose first element has a non-empty 'text' key
@@ -81,15 +88,22 @@ class HFEngineWrapper:
         top_p = params.get("top_p", 1.0)
 
         for prompt in prompts:
-            # Use chat template with thinking disabled so Qwen3 does not
-            # emit its chain-of-thought reasoning as part of the output.
             messages = [{"role": "user", "content": prompt}]
-            formatted = self.tokenizer.apply_chat_template(
-                messages,
-                tokenize=False,
-                add_generation_prompt=True,
-                enable_thinking=False,   # suppresses <think>...</think> block
-            )
+            # enable_thinking=False suppresses Qwen3's <think> block; other
+            # models that don't support the kwarg fall back gracefully.
+            try:
+                formatted = self.tokenizer.apply_chat_template(
+                    messages,
+                    tokenize=False,
+                    add_generation_prompt=True,
+                    enable_thinking=False,
+                )
+            except TypeError:
+                formatted = self.tokenizer.apply_chat_template(
+                    messages,
+                    tokenize=False,
+                    add_generation_prompt=True,
+                )
             inputs = self.tokenizer(
                 formatted, return_tensors="pt", truncation=True, max_length=2048
             ).to(self.device)
@@ -117,28 +131,54 @@ class HFEngineWrapper:
 # Main test
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
-    MODEL_NAME = "Qwen/Qwen3-4B"
+    # Teacher model names – same as the production config in structs/main.py
+    TEACHER_MODEL_1 = "openai/gpt-oss-20b"
+    TEACHER_MODEL_2 = "Qwen/Qwen2.5-Coder-14B-Instruct"
+    TEACHER_MODEL_3 = "deepseek-ai/DeepSeek-Coder-V2-Lite-Instruct"
+    # Student / level-guesser model
+    STUDENT_MODEL   = "Qwen/Qwen3-4B"
+
     TEST_PROMPT = (
         "Write a Python function `def add(a, b):` that returns the sum of a and b."
     )
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Using device: {device}")
-    print(f"Loading {MODEL_NAME} (used for all roles: teacher + student)...")
 
-    hf_model = AutoModelForCausalLM.from_pretrained(
-        MODEL_NAME, device_map="auto", trust_remote_code=True
+    # ── Load teacher models ──────────────────────────────────────────────────
+    print(f"\nLoading teacher model 1: {TEACHER_MODEL_1} ...")
+    hf_tm1 = AutoModelForCausalLM.from_pretrained(
+        TEACHER_MODEL_1, device_map="auto", trust_remote_code=True
     )
-    tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
-    tokenizer.pad_token = tokenizer.eos_token
+    tok1 = AutoTokenizer.from_pretrained(TEACHER_MODEL_1, trust_remote_code=True)
+    tok1.pad_token = tok1.pad_token or tok1.eos_token
 
-    # All three "teacher" HF models point to the same loaded weights
-    hf_tm1 = hf_tm2 = hf_tm3 = hf_model
-    tok1 = tok2 = tok3 = tokenizer
+    print(f"Loading teacher model 2: {TEACHER_MODEL_2} ...")
+    hf_tm2 = AutoModelForCausalLM.from_pretrained(
+        TEACHER_MODEL_2, device_map="auto", trust_remote_code=True
+    )
+    tok2 = AutoTokenizer.from_pretrained(TEACHER_MODEL_2, trust_remote_code=True)
+    tok2.pad_token = tok2.pad_token or tok2.eos_token
 
-    # sgl.Engine-compatible wrappers (same model, three logical teachers)
-    engine_wrapper = HFEngineWrapper(hf_model, tokenizer, device=device)
-    tm1 = tm2 = tm3 = engine_wrapper
+    print(f"Loading teacher model 3: {TEACHER_MODEL_3} ...")
+    hf_tm3 = AutoModelForCausalLM.from_pretrained(
+        TEACHER_MODEL_3, device_map="auto", trust_remote_code=True
+    )
+    tok3 = AutoTokenizer.from_pretrained(TEACHER_MODEL_3, trust_remote_code=True)
+    tok3.pad_token = tok3.pad_token or tok3.eos_token
+
+    # sgl.Engine-compatible wrappers, one per teacher
+    tm1 = HFEngineWrapper(hf_tm1, tok1, device=device)
+    tm2 = HFEngineWrapper(hf_tm2, tok2, device=device)
+    tm3 = HFEngineWrapper(hf_tm3, tok3, device=device)
+
+    # ── Load student model (level_guesser only) ──────────────────────────────
+    print(f"\nLoading student model (level_guesser): {STUDENT_MODEL} ...")
+    student_model = AutoModelForCausalLM.from_pretrained(
+        STUDENT_MODEL, device_map="auto", trust_remote_code=True
+    )
+    student_tokenizer = AutoTokenizer.from_pretrained(STUDENT_MODEL)
+    student_tokenizer.pad_token = student_tokenizer.eos_token
 
     params = {"temperature": 0.5, "top_p": 1.0, "max_new_tokens": 128}
 
@@ -148,8 +188,8 @@ if __name__ == "__main__":
         TEST_PROMPT, tm1, tm2, tm3, params, params, params
     )
 
-    # Test 1: wrapper returns correct structure
-    raw_out = engine_wrapper.generate([TEST_PROMPT], {"temperature": 0.5, "top_p": 1.0, "max_new_tokens": 32})
+    # Test 1: wrapper returns correct structure (use tm1 as representative)
+    raw_out = tm1.generate([TEST_PROMPT], {"temperature": 0.5, "top_p": 1.0, "max_new_tokens": 32})
     assert isinstance(raw_out, list) and len(raw_out) == 1 and "text" in raw_out[0], \
         f"HFEngineWrapper output malformed: {raw_out}"
     assert isinstance(raw_out[0]["text"], str) and len(raw_out[0]["text"]) > 0, \
@@ -232,7 +272,7 @@ if __name__ == "__main__":
     avg_value    = sum(c.value for c in root_node.children) / node_count
 
     should_stop = level_guesser(
-        hf_model, tokenizer, seq_length, teachers_agreement, avg_value, node_count
+        student_model, student_tokenizer, seq_length, teachers_agreement, avg_value, node_count
     )
 
     # Test 8: level_guesser returns a bool
@@ -249,6 +289,8 @@ if __name__ == "__main__":
     print(f"\nFull iteration summary:")
     print(f"  Prompt            : {repr(TEST_PROMPT[:60])} ...")
     print(f"  Golden solution   : {repr(golden_solution[:80])} ...")
+    print(f"  Teacher models    : {TEACHER_MODEL_1}, {TEACHER_MODEL_2}, {TEACHER_MODEL_3}")
+    print(f"  Student model     : {STUDENT_MODEL}")
     print(f"  Teachers agree?   : {teachers_agreement}")
     print(f"  Process reward    : {reward:.4f}")
     print(f"  should_stop       : {should_stop}")
