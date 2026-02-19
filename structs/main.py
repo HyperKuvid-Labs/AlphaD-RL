@@ -577,11 +577,11 @@ if __name__ == "__main__":
   # initialize the teacher models and tokenizers (oracles for MCTS)
   tm1 = sgl.Engine(model_path="openai/gpt-oss-20b", mem_fraction_static=0.25, context_length=4096)
   tm2 = sgl.Engine(model_path="Qwen/Qwen2.5-Coder-14B-Instruct", mem_fraction_static=0.25, context_length=4096)
-  tm3 = sgl.Engine(model_path="DeepSeek-Coder-V2-Lite-Instruct", mem_fraction_static=0.25, context_length=4096)
+  tm3 = sgl.Engine(model_path="deepseek-ai/DeepSeek-Coder-V2-Lite-Instruct", mem_fraction_static=0.25, context_length=4096)
 
   tokenizer1 = AutoTokenizer.from_pretrained("openai/gpt-oss-20b")
   tokenizer2 = AutoTokenizer.from_pretrained("Qwen/Qwen2.5-Coder-14B-Instruct")
-  tokenizer3 = AutoTokenizer.from_pretrained("DeepSeek-Coder-V2-Lite-Instruct")
+  tokenizer3 = AutoTokenizer.from_pretrained("deepseek-ai/DeepSeek-Coder-V2-Lite-Instruct")
 
   params1 = {"temperature": 0.5, "top_p": 1.0, "max_new_tokens": 1, "return_logprob": True, "top_logprobs_num": 20}
   params2 = {"temperature": 0.5, "top_p": 1.0, "max_new_tokens": 1, "return_logprob": True, "top_logprobs_num": 20}
