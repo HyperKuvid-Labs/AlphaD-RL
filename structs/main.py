@@ -121,7 +121,8 @@ def calculate_metrics_using_subprocess(script_text: str):
 
 def level_guesser(model, tokenizer, seq_length, agreement, avg_value, node_count):
     prompt = f"Length:{seq_length}, Agree:{agreement}, Value:{avg_value:.2f}, Nodes:{node_count}. Stop? (Yes/No):"
-    inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    inputs = tokenizer(prompt, return_tensors="pt").to(device)
 
     with torch.no_grad():
       out = model.generate(**inputs, temperature=0.0, top_p=1.0, use_cache=True)
