@@ -90,7 +90,7 @@ class HFEngineWrapper:
 
         for prompt in prompts:
             messages = [{"role": "user", "content": prompt}]
-            # enable_thinking=False suppresses Qwen3's <think> block; other
+            # enable_thinking=False suppresses Qwen3's 꽁 block; other
             # models that don't support the kwarg fall back gracefully.
             try:
                 formatted = self.tokenizer.apply_chat_template(
@@ -163,9 +163,16 @@ if __name__ == "__main__":
 
     print(f"Loading teacher model 3: {TEACHER_MODEL_3} ...")
     hf_tm3 = AutoModelForCausalLM.from_pretrained(
-        TEACHER_MODEL_3, device_map="auto", trust_remote_code=True
+        TEACHER_MODEL_3,
+        device_map="auto",
+        trust_remote_code=True,
+        force_download=True,   # pulls fresh modeling_deepseek.py from HF Hub
     )
-    tok3 = AutoTokenizer.from_pretrained(TEACHER_MODEL_3, trust_remote_code=True)
+    tok3 = AutoTokenizer.from_pretrained(
+        TEACHER_MODEL_3,
+        trust_remote_code=True,
+        force_download=True,
+    )
     tok3.pad_token = tok3.pad_token or tok3.eos_token
 
     # sgl.Engine-compatible wrappers, one per teacher.
