@@ -135,7 +135,7 @@ if __name__ == "__main__":
     # Teacher model names – same as the production config in structs/main.py
     TEACHER_MODEL_1 = "openai/gpt-oss-20b"
     TEACHER_MODEL_2 = "Qwen/Qwen2.5-Coder-14B-Instruct"
-    TEACHER_MODEL_3 = "inclusionAI/Ling-Coder-lite"
+    TEACHER_MODEL_3 = "mistralai/Codestral-22B-v0.1"
     # Student / level-guesser model
     STUDENT_MODEL   = "Qwen/Qwen3-4B"
 
