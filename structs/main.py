@@ -542,16 +542,16 @@ if __name__ == "__main__":
   # initialize the teacher models (sglang engines) for generation (completions, process reward, etc.)
   tm1 = sgl.Engine(model_path="openai/gpt-oss-20b", mem_fraction_static=0.25, context_length=4096)
   tm2 = sgl.Engine(model_path="Qwen/Qwen2.5-Coder-14B-Instruct", mem_fraction_static=0.25, context_length=4096)
-  tm3 = sgl.Engine(model_path="mistralai/Codestral-22B-v0.1", mem_fraction_static=0.25, context_length=4096)
+  tm3 = sgl.Engine(model_path="inclusionAI/Ling-Coder-lite", mem_fraction_static=0.25, context_length=4096)
 
   tokenizer1 = AutoTokenizer.from_pretrained("openai/gpt-oss-20b")
   tokenizer2 = AutoTokenizer.from_pretrained("Qwen/Qwen2.5-Coder-14B-Instruct")
-  tokenizer3 = AutoTokenizer.from_pretrained("mistralai/Codestral-22B-v0.1")
+  tokenizer3 = AutoTokenizer.from_pretrained("inclusionAI/Ling-Coder-lite")
 
   # HF models used exclusively for next-token logprob computation in MCTS expansion
   hf_tm1 = AutoModelForCausalLM.from_pretrained("openai/gpt-oss-20b", device_map="auto", trust_remote_code=True)
   hf_tm2 = AutoModelForCausalLM.from_pretrained("Qwen/Qwen2.5-Coder-14B-Instruct", device_map="auto", trust_remote_code=True)
-  hf_tm3 = AutoModelForCausalLM.from_pretrained("mistralai/Codestral-22B-v0.1", device_map="auto", trust_remote_code=True)
+  hf_tm3 = AutoModelForCausalLM.from_pretrained("inclusionAI/Ling-Coder-lite", device_map="auto", trust_remote_code=True)
 
   params1 = {"temperature": 0.5, "top_p": 1.0, "max_new_tokens": 1024}
   params2 = {"temperature": 0.5, "top_p": 1.0, "max_new_tokens": 1024}

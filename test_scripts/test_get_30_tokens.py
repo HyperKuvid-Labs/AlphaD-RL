@@ -32,11 +32,11 @@ if __name__ == "__main__":
     # Use a small mem_fraction_static so the engine fits in available GPU memory.
     hf_tm1 = AutoModelForCausalLM.from_pretrained("openai/gpt-oss-20b", device_map="auto", trust_remote_code=True)
     hf_tm2 = AutoModelForCausalLM.from_pretrained("Qwen/Qwen2.5-Coder-14B-Instruct", device_map="auto", trust_remote_code=True)
-    hf_tm3 = AutoModelForCausalLM.from_pretrained("deepseek-ai/DeepSeek-Coder-V2-Lite-Instruct", device_map="auto", trust_remote_code=True)
+    hf_tm3 = AutoModelForCausalLM.from_pretrained("inclusionAI/Ling-Coder-lite", device_map="auto", trust_remote_code=True)
 
     tokenzer1 = AutoTokenizer.from_pretrained("openai/gpt-oss-20b")
     tokenzer2 = AutoTokenizer.from_pretrained("Qwen/Qwen2.5-Coder-14B-Instruct")
-    tokenzer3 = AutoTokenizer.from_pretrained("deepseek-ai/DeepSeek-Coder-V2-Lite-Instruct")
+    tokenzer3 = AutoTokenizer.from_pretrained("inclusionAI/Ling-Coder-lite")
 
     print(f"gpt Vocab size: {tokenzer1.vocab_size}")
     print(f"Qwen Vocab size: {tokenzer2.vocab_size}")
