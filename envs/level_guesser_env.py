@@ -1,7 +1,7 @@
 # this will be the env script for the level guesser training, so it just contains the mcts implementation with populating the nodes, pruning the nodes, and just some other funcs like extracting the rewards like (test_cases passed, completion length, no. of nodes pruned) and the level guesser function itself which will be a simple function that takes in the above mentioned rewards and gives out the level to prune at
 
 from transformers import AutoTokenizer, AutoModelForCausalLM
-from vllm import LLM, SamplingParams
+import sglang as sgl
 import math
 from structs.main import mcts
 from datasets import load_dataset
@@ -36,39 +36,24 @@ import subprocess
 
 class LevelGuesserEnv:
   def __init__(self, tm1, tm2, tm3):
-    self.tm1 = LLM(tm1)
-    self.tm2 = LLM(tm2)
-    self.tm3 = LLM(tm3)
+    self.tm1 = sgl.Engine(model_path=tm1, mem_fraction_static=0.25, context_length=4096)
+    self.tm2 = sgl.Engine(model_path=tm2, mem_fraction_static=0.25, context_length=4096)
+    self.tm3 = sgl.Engine(model_path=tm3, mem_fraction_static=0.25, context_length=4096)
 
-    self.tokenizer1 = self.tm1.get_tokenizer()
-    self.tokenizer2 = self.tm2.get_tokenizer()
-    self.tokenizer3 = self.tm3.get_tokenizer()
+    self.tokenizer1 = AutoTokenizer.from_pretrained(tm1)
+    self.tokenizer2 = AutoTokenizer.from_pretrained(tm2)
+    self.tokenizer3 = AutoTokenizer.from_pretrained(tm3)
 
     vocab_size1 = self.tokenizer1.vocab_size
     vocab_size2 = self.tokenizer2.vocab_size
     vocab_size3 = self.tokenizer3.vocab_size
 
-    self.params1 = SamplingParams(
-        temperature=0.5,
-        top_p=1.0,
-        max_tokens=1,
-        logprobs=vocab_size1
-    )
-    self.params2 = SamplingParams(
-        temperature=0.5,
-        top_p=1.0,
-        max_tokens=1,
-        logprobs=vocab_size2
-    )
-    self.params3 = SamplingParams(
-        temperature=0.5,
-        top_p=1.0,
-        max_tokens=1,
-        logprobs=vocab_size3
-    )
+    self.params1 = {"temperature": 0.5, "top_p": 1.0, "max_new_tokens": 1, "return_logprob": True, "top_logprobs_num": 20}
+    self.params2 = {"temperature": 0.5, "top_p": 1.0, "max_new_tokens": 1, "return_logprob": True, "top_logprobs_num": 20}
+    self.params3 = {"temperature": 0.5, "top_p": 1.0, "max_new_tokens": 1, "return_logprob": True, "top_logprobs_num": 20}
 
     self.dataset = load_dataset("openai/openai_humaneval", split="test")
 
-    
+
 
 

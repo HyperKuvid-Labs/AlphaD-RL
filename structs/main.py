@@ -1,4 +1,4 @@
-from vllm import LLM, SamplingParams
+import sglang as sgl
 import math
 import json
 import ast
@@ -133,27 +133,15 @@ def level_guesser(model, tokenizer, seq_length, agreement, avg_value, node_count
 
 def generate_best_solution(prompt: str, tm1, tm2, tm3, params1, params2, params3):
   prompt+="Generate the most efficient possible solution for this problem, give only the code without any explanation or markdown formatting and make sure it is correct and optimal, and also the whole code from the import to the main function with time complexity measurement also, where it needs to print out the time complexity at the end of the code execution"
-  params1 = SamplingParams(
-      temperature=0.5,
-      top_p=1.0,
-      max_tokens=1024
-  )
-  params2 = SamplingParams(
-      temperature=0.5,
-      top_p=1.0,
-      max_tokens=1024
-  )
-  params3 = SamplingParams(
-      temperature=0.5,
-      top_p=1.0,
-      max_tokens=1024
-  )
-  output1 = tm1.generate(prompts=[prompt], sampling_params=params1)
-  output2 = tm2.generate(prompts=[prompt], sampling_params=params2)
-  output3 = tm3.generate(prompts=[prompt], sampling_params=params3)
+  params1 = {"temperature": 0.5, "top_p": 1.0, "max_new_tokens": 1024}
+  params2 = {"temperature": 0.5, "top_p": 1.0, "max_new_tokens": 1024}
+  params3 = {"temperature": 0.5, "top_p": 1.0, "max_new_tokens": 1024}
+  output1 = tm1.generate([prompt], params1)
+  output2 = tm2.generate([prompt], params2)
+  output3 = tm3.generate([prompt], params3)
 
-  best_output_index=get_best_solution(output1[0].outputs[0].text,output2[0].outputs[0].text,output3[0].outputs[0].text)
-  best_output = [output1[0].outputs[0].text, output2[0].outputs[0].text, output3[0].outputs[0].text][best_output_index]
+  best_output_index=get_best_solution(output1[0]['text'],output2[0]['text'],output3[0]['text'])
+  best_output = [output1[0]['text'], output2[0]['text'], output3[0]['text']][best_output_index]
   return best_output
 
 def get_process_reward(prompt : str, best_solution :str , partial_solution :str, teacher_model1,teacher_model2,teacher_model3,tokenizer1,tokenizer2,tokenizer3) -> float:
@@ -170,28 +158,16 @@ def get_process_reward(prompt : str, best_solution :str , partial_solution :str,
   Output Format:
   You only ouput the float score without any additional text or explanation.Not even any labels or indentation. Just the number."""
 
-  params1 = SamplingParams(
-      temperature=0.1,
-      top_p=1.0,
-      max_tokens=10
-  )
-  params2 = SamplingParams(
-      temperature=0.1,
-      top_p=1.0,
-      max_tokens=10
-  )
-  params3 = SamplingParams(
-      temperature=0.1,
-      top_p=1.0,
-      max_tokens=10
-  )
-  output1 = teacher_model1.generate(prompts=[final_prompt], sampling_params=params1)
-  output2 = teacher_model2.generate(prompts=[final_prompt], sampling_params=params2)
-  output3 = teacher_model3.generate(prompts=[final_prompt], sampling_params=params3)
+  params1 = {"temperature": 0.1, "top_p": 1.0, "max_new_tokens": 10}
+  params2 = {"temperature": 0.1, "top_p": 1.0, "max_new_tokens": 10}
+  params3 = {"temperature": 0.1, "top_p": 1.0, "max_new_tokens": 10}
+  output1 = teacher_model1.generate([final_prompt], params1)
+  output2 = teacher_model2.generate([final_prompt], params2)
+  output3 = teacher_model3.generate([final_prompt], params3)
 
-  raw_text1 = output1[0].outputs[0].text
-  raw_text2 = output2[0].outputs[0].text
-  raw_text3 = output3[0].outputs[0].text
+  raw_text1 = output1[0]['text']
+  raw_text2 = output2[0]['text']
+  raw_text3 = output3[0]['text']
 
   try:
     score1 = float(raw_text1.strip())
@@ -282,66 +258,41 @@ def get_top_3_leaves(leaf_nodes):
     sorted_leaves = sorted(leaf_nodes, key=get_average_reward, reverse=True)
     return sorted_leaves[:3]
 
-def get_30_tokens(llm1: LLM, llm2: LLM, llm3: LLM,prompt: str , tokenizer1 , tokenizer2 , tokenizer3 ):
-    vocab_size1 = tokenizer1.vocab_size
-    vocab_size2 = tokenizer2.vocab_size
-    vocab_size3 = tokenizer3.vocab_size
-    params1 = SamplingParams(
-        temperature=0.5,
-        top_p=1.0,
-        max_tokens=1,
-        logprobs=vocab_size1
-    )
-    params2 = SamplingParams(
-        temperature=0.5,
-        top_p=1.0,
-        max_tokens=1,
-        logprobs=vocab_size2
-    )
-    params3 = SamplingParams(
-        temperature=0.5,
-        top_p=1.0,
-        max_tokens=1,
-        logprobs=vocab_size3
-    )
+def get_30_tokens(llm1, llm2, llm3, prompt: str, tokenizer1, tokenizer2, tokenizer3):
+    # SGLang returns top-k logprobs via return_logprob + top_logprobs_num
+    # output['meta_info']['output_top_logprobs'][0] = list of [logprob, token_id, token_text]
+    # sorted descending by logprob (highest first) for the first generated token
+    params1 = {"temperature": 0.5, "top_p": 1.0, "max_new_tokens": 1, "return_logprob": True, "top_logprobs_num": 20}
+    params2 = {"temperature": 0.5, "top_p": 1.0, "max_new_tokens": 1, "return_logprob": True, "top_logprobs_num": 20}
+    params3 = {"temperature": 0.5, "top_p": 1.0, "max_new_tokens": 1, "return_logprob": True, "top_logprobs_num": 20}
 
-    output1 = llm1.generate(prompts=[prompt], sampling_params=params1)
-    output2 = llm2.generate(prompts=[prompt], sampling_params=params2)
-    output3 = llm3.generate(prompts=[prompt], sampling_params=params3)
-    #First Prompt -> First Generated Sequence -> First Generated Token
-    token_logprobs_dict1 = output1[0].outputs[0].logprobs[0]
-    token_logprobs_dict2 = output2[0].outputs[0].logprobs[0]
-    token_logprobs_dict3 = output3[0].outputs[0].logprobs[0]
+    output1 = llm1.generate(prompt, params1)
+    output2 = llm2.generate(prompt, params2)
+    output3 = llm3.generate(prompt, params3)
 
-    #Convert the dictionary to a list and sort it by logprob value
-    sorted_logprobs1 = sorted(
-        [(token_id, lp_obj.logprob) for token_id, lp_obj in token_logprobs_dict1.items()],
-        key=lambda x: x[1]
-    )
+    # SGLang output_top_logprobs: list per token of [logprob, token_id, token_text], sorted descending
+    top_logprobs1 = output1['meta_info']['output_top_logprobs'][0]
+    top_logprobs2 = output2['meta_info']['output_top_logprobs'][0]
+    top_logprobs3 = output3['meta_info']['output_top_logprobs'][0]
 
-    sorted_logprobs2 = sorted(
-        [(token_id, lp_obj.logprob) for token_id, lp_obj in token_logprobs_dict2.items()],
-        key=lambda x: x[1]
-    )
+    def format_sglang_logprobs(top_logprobs):
+        # Convert [logprob, token_id, token_text] -> (token_id, token_text, logprob)
+        return [(entry[1], entry[2], entry[0]) for entry in top_logprobs]
 
-    sorted_logprobs3 = sorted(
-        [(token_id, lp_obj.logprob) for token_id, lp_obj in token_logprobs_dict3.items()],
-        key=lambda x: x[1]
-    )
-    def format_decoded_list(logprob_list, tokenizer):
-      # Wraps token_id in a list [] because decode() expects a sequence of IDs
-      return [(t_id, tokenizer.decode([t_id]), lp) for t_id, lp in logprob_list]
+    formatted1 = format_sglang_logprobs(top_logprobs1)  # highest logprob first
+    formatted2 = format_sglang_logprobs(top_logprobs2)
+    formatted3 = format_sglang_logprobs(top_logprobs3)
 
-    bottom5_1 = format_decoded_list(sorted_logprobs1[:5], tokenizer1)
-    top5_1 = format_decoded_list(sorted_logprobs1[-5:][::-1], tokenizer1)
+    top5_1 = formatted1[:5]
+    bottom5_1 = formatted1[-5:][::-1]
 
-    bottom5_2 = format_decoded_list(sorted_logprobs2[:5], tokenizer2)
-    top5_2 = format_decoded_list(sorted_logprobs2[-5:][::-1], tokenizer2)
+    top5_2 = formatted2[:5]
+    bottom5_2 = formatted2[-5:][::-1]
 
-    bottom5_3 = format_decoded_list(sorted_logprobs3[:5], tokenizer3)
-    top5_3 = format_decoded_list(sorted_logprobs3[-5:][::-1], tokenizer3)
+    top5_3 = formatted3[:5]
+    bottom5_3 = formatted3[-5:][::-1]
 
-    teachers_agreemnet=(top5_1[0][0]==top5_2[0][0]==top5_3[0][0])
+    teachers_agreemnet = (top5_1[0][0] == top5_2[0][0] == top5_3[0][0])
 
     return [top5_1 + bottom5_1 + top5_2 + bottom5_2 + top5_3 + bottom5_3, teachers_agreemnet]
 
@@ -439,16 +390,16 @@ def mcts(prompt, test, entrypoint, num_simulations, teacher_model1,teacher_model
       ### Completion:"""
       continuation_prompt.append(formatted_prompt)
 
-    outputs1 = teacher_model1.generate(prompts=continuation_prompt, sampling_params=params1)
-    outputs2 = teacher_model2.generate(prompts=continuation_prompt, sampling_params=params2)
-    outputs3 = teacher_model3.generate(prompts=continuation_prompt, sampling_params=params3)
+    outputs1 = teacher_model1.generate(continuation_prompt, params1)
+    outputs2 = teacher_model2.generate(continuation_prompt, params2)
+    outputs3 = teacher_model3.generate(continuation_prompt, params3)
 
     lengths = []
     test_passed_reward = 1.0
     for i in range(len(top_3_nodes)):
-      script1 = outputs1[i].outputs[0].text
-      script2 = outputs2[i].outputs[0].text
-      script3 = outputs3[i].outputs[0].text
+      script1 = outputs1[i]['text']
+      script2 = outputs2[i]['text']
+      script3 = outputs3[i]['text']
 
       import os
       os.makedirs("temp_scripts_mcts", exist_ok=True)
@@ -564,20 +515,16 @@ def calculate_cyclomatic_complexity(code_string: str) -> int:
 
 
 def finish_and_extract_dpo(prompt: str, top_3_nodes: list, llm1, llm2, llm3, dataset_path="dpo_dataset.jsonl"):
-    params = SamplingParams(
-        temperature=0.2,
-        top_p=0.95,
-        max_tokens=1024
-    )
+    params = {"temperature": 0.2, "top_p": 0.95, "max_new_tokens": 1024}
 
     continuation_prompts = []
     for node in top_3_nodes:
         formatted_prompt = f"{prompt}\n\nContinue and complete the following code without repeating what is already written:\n{node.generated_text}"
         continuation_prompts.append(formatted_prompt)
 
-    outputs1 = llm1.generate(prompts=continuation_prompts, sampling_params=params)
-    outputs2 = llm2.generate(prompts=continuation_prompts, sampling_params=params)
-    outputs3 = llm3.generate(prompts=continuation_prompts, sampling_params=params)
+    outputs1 = llm1.generate(continuation_prompts, params)
+    outputs2 = llm2.generate(continuation_prompts, params)
+    outputs3 = llm3.generate(continuation_prompts, params)
 
     final_3_scripts = []
 
@@ -631,36 +578,17 @@ if __name__ == "__main__":
   dataset = load_dataset("openai/openai_humaneval", split="test")
 
   # initialize the teacher models and tokenizers (oracles for MCTS)
-  tm1 = LLM("bigcode/starcoder2-15b", gpu_memory_utilization=0.25, max_model_len=4096)
-  tm2 = LLM("Qwen/Qwen2.5-Coder-14B-Instruct", gpu_memory_utilization=0.25, max_model_len=4096)
-  tm3 = LLM("ServiceNow-AI/Apriel-1.5-15b-Thinker", gpu_memory_utilization=0.25, max_model_len=4096)
+  tm1 = sgl.Engine(model_path="bigcode/starcoder2-15b", mem_fraction_static=0.25, context_length=4096)
+  tm2 = sgl.Engine(model_path="Qwen/Qwen2.5-Coder-14B-Instruct", mem_fraction_static=0.25, context_length=4096)
+  tm3 = sgl.Engine(model_path="ServiceNow-AI/Apriel-1.5-15b-Thinker", mem_fraction_static=0.25, context_length=4096)
 
-  tokenizer1 = tm1.get_tokenizer()
-  tokenizer2 = tm2.get_tokenizer()
-  tokenizer3 = tm3.get_tokenizer()
+  tokenizer1 = AutoTokenizer.from_pretrained("bigcode/starcoder2-15b")
+  tokenizer2 = AutoTokenizer.from_pretrained("Qwen/Qwen2.5-Coder-14B-Instruct")
+  tokenizer3 = AutoTokenizer.from_pretrained("ServiceNow-AI/Apriel-1.5-15b-Thinker")
 
-  vocab_size1 = tokenizer1.vocab_size
-  vocab_size2 = tokenizer2.vocab_size
-  vocab_size3 = tokenizer3.vocab_size
-
-  params1 = SamplingParams(
-      temperature=0.5,
-      top_p=1.0,
-      max_tokens=1,
-      logprobs=vocab_size1
-  )
-  params2 = SamplingParams(
-      temperature=0.5,
-      top_p=1.0,
-      max_tokens=1,
-      logprobs=vocab_size2
-  )
-  params3 = SamplingParams(
-      temperature=0.5,
-      top_p=1.0,
-      max_tokens=1,
-      logprobs=vocab_size3
-  )
+  params1 = {"temperature": 0.5, "top_p": 1.0, "max_new_tokens": 1, "return_logprob": True, "top_logprobs_num": 20}
+  params2 = {"temperature": 0.5, "top_p": 1.0, "max_new_tokens": 1, "return_logprob": True, "top_logprobs_num": 20}
+  params3 = {"temperature": 0.5, "top_p": 1.0, "max_new_tokens": 1, "return_logprob": True, "top_logprobs_num": 20}
 
   # level_guesser student model (the one we're training with GRPO)
   # student_model = AutoModelForCausalLM.from_pretrained(
@@ -720,9 +648,8 @@ if __name__ == "__main__":
       num_train_epochs=2,         # Or max_steps=1000 for more control
       per_device_train_batch_size=1,  # Small for GPU mem (MCTS is heavy)
       gradient_accumulation_steps=4,
-      # Enable vLLM for generation (much faster than HF)
-      use_vllm=True,
-      vllm_mode="colocate",
+      # Enable SGLang for generation (much faster than HF)
+      use_sglang=True,
       shuffle_dataset=True,
       # Generation params
       temperature=0.7,

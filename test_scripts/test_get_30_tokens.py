@@ -1,7 +1,7 @@
 """
 Test for get_30_tokens() in structs/main.py
 
-Uses a single Qwen/Qwen3-4B model loaded three times via vLLM to simulate
+Uses a single Qwen/Qwen3-4B model loaded three times via SGLang to simulate
 three teacher models. We do this to avoid needing three separate GPU allocations.
 
 What is tested:
@@ -18,21 +18,21 @@ import sys
 import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from vllm import LLM
+import sglang as sgl
+from transformers import AutoTokenizer
 from structs.main import get_30_tokens
 
 MODEL_NAME = "Qwen/Qwen3-4B"
 TEST_PROMPT = "def add(a, b):"
 
-print("Loading model (shared weights, 3 instances)...")
-# Use a small gpu_memory_utilization so three instances can coexist if needed.
-# For a single-GPU test, we reuse the same LLM object for all three "teachers".
-llm = LLM(
-    model=MODEL_NAME,
-    gpu_memory_utilization=0.6,
-    max_model_len=1024,
+print("Loading model (shared weights, single instance)...")
+# Use a small mem_fraction_static so the engine fits in available GPU memory.
+llm = sgl.Engine(
+    model_path=MODEL_NAME,
+    mem_fraction_static=0.6,
+    context_length=1024,
 )
-tokenizer = llm.get_tokenizer()
+tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
 
 print(f"Vocab size: {tokenizer.vocab_size}")
 print(f"Running get_30_tokens with prompt: {repr(TEST_PROMPT)}\n")
