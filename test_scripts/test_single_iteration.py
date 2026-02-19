@@ -76,10 +76,11 @@ class HFEngineWrapper:
     returns  [{'text': generated_text}, ...]
     """
 
-    def __init__(self, model, tokenizer, device="cuda"):
+    def __init__(self, model, tokenizer, device="cuda", use_cache=True):
         self.model = model
         self.tokenizer = tokenizer
         self.device = device
+        self.use_cache = use_cache
 
     def generate(self, prompts: list, params: dict) -> list:
         results = []
@@ -116,7 +117,7 @@ class HFEngineWrapper:
                     temperature=temperature if do_sample else None,
                     top_p=top_p if do_sample else None,
                     do_sample=do_sample,
-                    use_cache=True,
+                    use_cache=self.use_cache,
                 )
 
             # Only return the newly generated tokens (skip the prompt)
@@ -167,10 +168,12 @@ if __name__ == "__main__":
     tok3 = AutoTokenizer.from_pretrained(TEACHER_MODEL_3, trust_remote_code=True)
     tok3.pad_token = tok3.pad_token or tok3.eos_token
 
-    # sgl.Engine-compatible wrappers, one per teacher
-    tm1 = HFEngineWrapper(hf_tm1, tok1, device=device)
-    tm2 = HFEngineWrapper(hf_tm2, tok2, device=device)
-    tm3 = HFEngineWrapper(hf_tm3, tok3, device=device)
+    # sgl.Engine-compatible wrappers, one per teacher.
+    # DeepSeek custom modeling has a DynamicCache.seen_tokens incompatibility
+    # with newer transformers — disable KV cache for it as a workaround.
+    tm1 = HFEngineWrapper(hf_tm1, tok1, device=device, use_cache=True)
+    tm2 = HFEngineWrapper(hf_tm2, tok2, device=device, use_cache=True)
+    tm3 = HFEngineWrapper(hf_tm3, tok3, device=device, use_cache=False)
 
     # ── Load student model (level_guesser only) ──────────────────────────────
     print(f"\nLoading student model (level_guesser): {STUDENT_MODEL} ...")
