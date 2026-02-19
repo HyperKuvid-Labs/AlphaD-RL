@@ -23,7 +23,7 @@ if __name__ == "__main__":
     ]
 
     for model_name in models:
-        llm = sgl.Engine(model_path=model_name, mem_fraction_static=0.25, context_length=4096)
+        llm = sgl.Engine(model_path=model_name, mem_fraction_static=0.25, context_length=4096, trust_remote_code=True)
         sampling_params = {"temperature": 0.5}
 
         for prompt in prompts:
