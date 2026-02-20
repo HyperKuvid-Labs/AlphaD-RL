@@ -129,7 +129,7 @@ def level_guesser(model, tokenizer, seq_length, agreement, avg_value, node_count
     inputs = tokenizer(prompt, return_tensors="pt").to(device)
 
     with torch.no_grad():
-      out = model.generate(**inputs, do_sample=False, use_cache=True)
+      out = model.generate(**inputs, do_sample=False, use_cache=True, max_new_tokens=5)
 
     response = tokenizer.decode(out[0], skip_special_tokens=True).lower()
     return "yes" in response
@@ -200,7 +200,7 @@ def get_process_reward(prompt : str, best_solution :str , partial_solution :str,
     score3 = 0.0
 
   average_score = (score1 + score2 + score3) / 3.0
-  return average_score
+  return max(-1.0, min(1.0, average_score))  # Clamp to [-1.0, 1.0]
 
 class Node:
   def __init__(self,token_id,generated_text,parent):
@@ -349,7 +349,10 @@ def get_drift_reward(min_len, avg_len, max_len, lengths):
 
   ---------------------------------------------------------------------------
   """
-  std_len = math.sqrt(sum((l - avg_len) ** 2 for lens in lengths for l in lens) / (3 * len(lengths)))
+  all_lengths = [l1 for l1,l2,l3 in lengths] + [l2 for l1,l2,l3 in lengths] + [l3 for l1,l2,l3 in lengths]
+  mean_l = sum(all_lengths) / len(all_lengths)
+  var = sum((x - mean_l)**2 for x in all_lengths) / len(all_lengths)
+  std_len = math.sqrt(var)
 
   max_std = (max_len - min_len) / 2.0
   if max_std == 0:
@@ -379,7 +382,7 @@ def mcts(prompt, test, entrypoint, num_simulations, teacher_model1, teacher_mode
       avg_value = leaf.value
     should_stop = level_guesser(student_model, student_tokenizer, len(leaf.generated_text), teachers_agreement, avg_value, node_count)
     if should_stop:
-      "Level Guesser triggered early stop at simulation"
+      print("Level Guesser triggered early stop at simulation")
       break
 
     all_leaves = get_all_leaf_nodes(root_node)
@@ -439,7 +442,7 @@ def mcts(prompt, test, entrypoint, num_simulations, teacher_model1, teacher_mode
       for output in [o1, o2, o3]:
         import re
          # extract the number of test cases passed from the output
-        match = re.search(r"Passed\s+(\d+)\s+out\s+ of\s+(\d+)\s+test\s+cases", output)
+        match = re.search(r"Passed\s+(\d+)\s+out\s+of\s+(\d+)\s+test\s+cases", output)
         if match:
           passed = int(match.group(1))
           total = int(match.group(2))
@@ -461,7 +464,7 @@ def mcts(prompt, test, entrypoint, num_simulations, teacher_model1, teacher_mode
 
     # reward for the completion length
     cr = get_drift_reward(min_len, avg_len, max_len, lengths)
-    return top_3_nodes, num_leaves, cr, test_passed_reward
+  return top_3_nodes, num_leaves, cr, test_passed_reward
 
 def calculate_cyclomatic_complexity(code_string: str) -> int:
     complexity_score = 1
@@ -636,6 +639,7 @@ if __name__ == "__main__":
 
       # multi_objective_aggregation="normalize_then_sum" # gdpo style
       # cannot use this, as it is available only in trl>=0.27.0 but for that we need vlm<0.13.0, and if i pin vllm==0.12.0, it requires torch<=2.9.0, but im currently using torch >=2.9.1, so thought og not changing the whole cycle
+      save_steps=100,
   )
 
   trainer = GRPOTrainer(
@@ -648,7 +652,7 @@ if __name__ == "__main__":
   )
 
   # Start training! (MCTS runs on-demand via cache in the reward funcs)
-  trainer.train(resume_from_checkpoint=True)
+  trainer.train()
 
   # Optional: Save the trained level_guesser
   trainer.save_model("level_guesser_qwen3_4b")
