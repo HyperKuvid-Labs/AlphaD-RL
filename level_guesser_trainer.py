@@ -428,7 +428,8 @@ def train(cfg: TrainConfig = TrainConfig()) -> None:
 
     # ── apply GPU memory fraction for all models ──────────────────────────────
     if device.type == "cuda":
-        torch.cuda.set_per_process_memory_fraction(cfg.mem_fraction, device=device)
+        device_index = device.index if device.index is not None else 0
+        torch.cuda.set_per_process_memory_fraction(cfg.mem_fraction, device=device_index)
         log.info(f"GPU memory fraction set to {cfg.mem_fraction}")
 
     # ── load teachers ─────────────────────────────────────────────────────────
