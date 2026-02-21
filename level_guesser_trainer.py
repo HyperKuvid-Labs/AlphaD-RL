@@ -271,8 +271,7 @@ def run_rollout(
             max_length=512,
         ).to(device)
 
-        if _static_cache is not None:
-            _static_cache.reset()
+        _static_cache = None  # disable static cache after first use, to avoid stale KV reuse across steps
 
         try:
             output_ids = student.generate(
