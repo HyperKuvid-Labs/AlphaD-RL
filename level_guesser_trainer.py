@@ -12,9 +12,9 @@ Architecture
 * Teacher 2: Qwen/Qwen2.5-Coder-7B-Instruct
 * Teacher 3: deepseek-ai/DeepSeek-Coder-V2-Lite-Instruct
 
-Each teacher is loaded twice:
-  • sglang Engine  - fast batched generation for golden-solution & process-reward calls
-  • HF model       - token-level logprob extraction for MCTS leaf expansion
+All models are loaded via Hugging Face AutoModelForCausalLM with explicit
+device placement (no device_map="auto") and a shared per-process GPU memory
+fraction (mem_fraction=0.25).
 
 Training loop (GRPO)
 --------------------
@@ -44,7 +44,6 @@ from transformers import (
     get_cosine_schedule_with_warmup,
 )
 from datasets import load_dataset
-import sglang as sgl
 
 from mcts_env import MCTSEnvironment
 
@@ -85,13 +84,13 @@ class TrainConfig:
     # ── teacher generation ────────────────────────────────────────────────────
     teacher_temperature: float    = 0.7
     teacher_max_new_tokens: int   = 1024
-    teacher_context_length: int   = 4096
-    teacher_mem_fraction: float   = 0.25   # per-engine GPU memory fraction
+    mem_fraction: float           = 0.25   # per-process GPU memory fraction (all models)
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Model loading
 # ──────────────────────────────────────────────────────────────────────────────
-def _build_sgl_params(cfg: TrainConfig) -> dict:
+def _build_gen_params(cfg: TrainConfig) -> dict:
+    """Generation kwargs passed directly to HF model.generate()."""
     return {
         "temperature": cfg.teacher_temperature,
         "top_p": 1.0,
@@ -99,13 +98,14 @@ def _build_sgl_params(cfg: TrainConfig) -> dict:
     }
 
 
-def load_teachers(cfg: TrainConfig):
+def load_teachers(cfg: TrainConfig, device: torch.device):
     """
+    Load all three teacher models via Hugging Face.
+
     Returns:
-        tm1, tm2, tm3           - sglang Engine instances
-        hf_tm1, hf_tm2, hf_tm3 - HF AutoModelForCausalLM instances
-        tok1, tok2, tok3        - HF AutoTokenizer instances
-        params1, params2, params3 - generation param dicts for sglang
+        hf_tm1, hf_tm2, hf_tm3   - HF AutoModelForCausalLM instances (eval mode)
+        tok1, tok2, tok3          - HF AutoTokenizer instances
+        params1, params2, params3 - generation kwarg dicts for model.generate()
     """
     model_ids = [
         "openai/gpt-oss-20b",
@@ -113,38 +113,29 @@ def load_teachers(cfg: TrainConfig):
         "deepseek-ai/DeepSeek-Coder-V2-Lite-Instruct",
     ]
 
-    sgl_engines: list = []
-    hf_models:   list = []
-    tokenizers:  list = []
+    hf_models:  list = []
+    tokenizers: list = []
 
     for mid in model_ids:
-        log.info(f"Loading teacher sglang engine: {mid}")
-        eng = sgl.Engine(
-            model_path=mid,
-            mem_fraction_static=cfg.teacher_mem_fraction,
-            context_length=cfg.teacher_context_length,
-        )
-        sgl_engines.append(eng)
-
-        log.info(f"Loading teacher HF model:      {mid}")
+        log.info(f"Loading teacher HF model: {mid}")
         tok = AutoTokenizer.from_pretrained(mid, trust_remote_code=True)
-        hf  = AutoModelForCausalLM.from_pretrained(
+        if tok.pad_token is None:
+            tok.pad_token = tok.eos_token
+        hf = AutoModelForCausalLM.from_pretrained(
             mid,
-            device_map="auto",
             trust_remote_code=True,
             torch_dtype=torch.bfloat16,
-        )
+        ).to(device)
         hf.eval()
         tokenizers.append(tok)
         hf_models.append(hf)
 
-    params = [_build_sgl_params(cfg)] * 3
+    params = [_build_gen_params(cfg)] * 3
 
     return (
-        *sgl_engines,               # tm1, tm2, tm3
-        *hf_models,                 # hf_tm1, hf_tm2, hf_tm3
-        *tokenizers,                # tok1, tok2, tok3
-        *params,                    # params1, params2, params3
+        *hf_models,   # hf_tm1, hf_tm2, hf_tm3
+        *tokenizers,  # tok1, tok2, tok3
+        *params,      # params1, params2, params3
     )
 
 
@@ -166,20 +157,18 @@ def load_student(
 
     model = AutoModelForCausalLM.from_pretrained(
         cfg.student_model_id,
-        device_map="auto",
         trust_remote_code=True,
         torch_dtype=torch.bfloat16,
-    )
-    model.train() # set the model in training mode (for dropout, etc)
+    ).to(device)
+    model.train()  # set the model in training mode (for dropout, etc)
 
     # Frozen reference copy — same weights, no grad
     log.info("Loading frozen reference copy of student for KL penalty …")
     ref_model = AutoModelForCausalLM.from_pretrained(
         cfg.student_model_id,
-        device_map="auto",
         trust_remote_code=True,
         torch_dtype=torch.bfloat16,
-    )
+    ).to(device)
     ref_model.eval()
     for p in ref_model.parameters():
         p.requires_grad_(False)
@@ -437,13 +426,17 @@ def train(cfg: TrainConfig = TrainConfig()) -> None:
     writer = SummaryWriter(log_dir=cfg.log_dir)
     log.info(f"TensorBoard logs → {cfg.log_dir}")
 
+    # ── apply GPU memory fraction for all models ──────────────────────────────
+    if device.type == "cuda":
+        torch.cuda.set_per_process_memory_fraction(cfg.mem_fraction, device=device)
+        log.info(f"GPU memory fraction set to {cfg.mem_fraction}")
+
     # ── load teachers ─────────────────────────────────────────────────────────
     (
-        tm1,    tm2,    tm3,
         hf_tm1, hf_tm2, hf_tm3,
         tok1,   tok2,   tok3,
         params1, params2, params3,
-    ) = load_teachers(cfg)
+    ) = load_teachers(cfg, device)
 
     # ── load student + frozen reference ───────────────────────────────────────
     student, ref_model, student_tok = load_student(cfg, device)
@@ -471,7 +464,6 @@ def train(cfg: TrainConfig = TrainConfig()) -> None:
 
     # ── shared MCTS environment ───────────────────────────────────────────────
     env = MCTSEnvironment(
-        tm1,    tm2,    tm3,
         hf_tm1, hf_tm2, hf_tm3,
         tok1,   tok2,   tok3,
         params1, params2, params3,
@@ -660,13 +652,6 @@ def train(cfg: TrainConfig = TrainConfig()) -> None:
     student_tok.save_pretrained(final_path)
     log.info(f"Training complete.  Final model saved → {final_path}")
     writer.close()
-
-    # ── shutdown sglang engines ───────────────────────────────────────────────
-    for eng in (tm1, tm2, tm3):
-        try:
-            eng.shutdown()
-        except Exception:
-            pass
 
 if __name__ == "__main__":
     train()

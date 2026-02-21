@@ -1,3 +1,32 @@
+def _hf_generate(model, tokenizer, prompts, params):
+    """
+    Run HF model.generate() for a list of prompts.
+    Returns a list of dicts with key 'text' (newly generated tokens only),
+    matching the interface previously expected from sglang engines.
+    """
+    import torch
+    device = next(model.parameters()).device
+    do_sample = params.get("temperature", 0.7) > 0
+    results = []
+    for prompt in prompts:
+        inputs = tokenizer(
+            prompt, return_tensors="pt", truncation=True, max_length=2048
+        ).to(device)
+        with torch.no_grad():
+            output_ids = model.generate(
+                **inputs,
+                max_new_tokens=params.get("max_new_tokens", 512),
+                temperature=params.get("temperature", 0.7),
+                top_p=params.get("top_p", 1.0),
+                do_sample=do_sample,
+                pad_token_id=tokenizer.pad_token_id or tokenizer.eos_token_id,
+            )
+        gen_ids = output_ids[0, inputs["input_ids"].shape[1]:]
+        text = tokenizer.decode(gen_ids, skip_special_tokens=True)
+        results.append({"text": text})
+    return results
+
+
 def extract_code(code):
   import re
   code = re.sub(r'```(?:python)?\n', '', code)
@@ -65,7 +94,7 @@ def get_best_solution(o1, o2, o3):
   x = get_best_time_complexity(so1.stdout, so2.stdout, so3.stdout)
   return x
 
-def generate_best_solution(prompt: str, tm1, tm2, tm3, params1, params2, params3):
+def generate_best_solution(prompt: str, tm1, tm2, tm3, tok1, tok2, tok3, params1, params2, params3):
   prompt = (
       "[SYSTEM] You are a pure Python code output machine. "
       "You MUST output ONLY valid Python source code — absolutely no prose, "
@@ -81,12 +110,10 @@ def generate_best_solution(prompt: str, tm1, tm2, tm3, params1, params2, params3
       "   print(f'Time Complexity: O(<expression in n>)')\n"
       "4. Output the Python code and NOTHING ELSE — not a single word outside the code."
   )
-  params1 = {"temperature": 0.5, "top_p": 1.0, "max_new_tokens": 1024}
-  params2 = {"temperature": 0.5, "top_p": 1.0, "max_new_tokens": 1024}
-  params3 = {"temperature": 0.5, "top_p": 1.0, "max_new_tokens": 1024}
-  output1 = tm1.generate([prompt], params1)
-  output2 = tm2.generate([prompt], params2)
-  output3 = tm3.generate([prompt], params3)
+  gen_params = {"temperature": 0.5, "top_p": 1.0, "max_new_tokens": 1024}
+  output1 = _hf_generate(tm1, tok1, [prompt], gen_params)
+  output2 = _hf_generate(tm2, tok2, [prompt], gen_params)
+  output3 = _hf_generate(tm3, tok3, [prompt], gen_params)
 
   best_output_index=get_best_solution(output1[0]['text'],output2[0]['text'],output3[0]['text'])
   best_output = [output1[0]['text'], output2[0]['text'], output3[0]['text']][best_output_index]
@@ -197,12 +224,10 @@ def get_process_reward(prompt : str, best_solution :str , partial_solution :str,
   Output Format:
   You only ouput the float score without any additional text or explanation.Not even any labels or indentation. Just the number."""
 
-  params1 = {"temperature": 0.1, "top_p": 1.0, "max_new_tokens": 10}
-  params2 = {"temperature": 0.1, "top_p": 1.0, "max_new_tokens": 10}
-  params3 = {"temperature": 0.1, "top_p": 1.0, "max_new_tokens": 10}
-  output1 = teacher_model1.generate([final_prompt], params1)
-  output2 = teacher_model2.generate([final_prompt], params2)
-  output3 = teacher_model3.generate([final_prompt], params3)
+  score_params = {"temperature": 0.1, "top_p": 1.0, "max_new_tokens": 10}
+  output1 = _hf_generate(teacher_model1, tokenizer1, [final_prompt], score_params)
+  output2 = _hf_generate(teacher_model2, tokenizer2, [final_prompt], score_params)
+  output3 = _hf_generate(teacher_model3, tokenizer3, [final_prompt], score_params)
 
   raw_text1 = output1[0]['text']
   raw_text2 = output2[0]['text']
