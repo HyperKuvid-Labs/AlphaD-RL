@@ -9,7 +9,7 @@ Architecture
 ------------
 * Student  : Qwen/Qwen3-4B   → action policy (Yes / No at each MCTS step)
 * Teacher 1: openai/gpt-oss-20b
-* Teacher 2: Qwen/Qwen3-Coder-30B-A3B-Instruct
+* Teacher 2: Qwen/Qwen2.5-Coder-14B-Instruct
 * Teacher 3: deepseek-ai/DeepSeek-Coder-V2-Lite-Instruct
 
 Each teacher is loaded twice:
@@ -109,7 +109,7 @@ def load_teachers(cfg: TrainConfig):
     """
     model_ids = [
         "openai/gpt-oss-20b",
-        "Qwen/Qwen3-Coder-30B-A3B-Instruct",
+        "Qwen/Qwen2.5-Coder-14B-Instruct",
         "deepseek-ai/DeepSeek-Coder-V2-Lite-Instruct",
     ]
 
