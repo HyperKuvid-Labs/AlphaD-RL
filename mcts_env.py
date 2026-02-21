@@ -2,7 +2,7 @@ import os
 import math
 import subprocess
 import re
-from .utils import generate_best_solution, expand_leaf, get_process_reward, get_all_leaf_nodes, get_top_3_leaves, get_drift_reward, get_cr, get_pr
+from utils import generate_best_solution, expand_leaf, get_process_reward, get_all_leaf_nodes, get_top_3_leaves, get_drift_reward, get_cr, get_pr
 
 class Node:
     # basic mcts node structure
