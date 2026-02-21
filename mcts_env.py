@@ -115,9 +115,6 @@ class MCTSEnvironment:
         return next_state, 0.0, False
 
     def _terminate_and_evaluate(self):
-        """
-        actor chose to stop. run the unit tests and calculate the final grpo reward.
-        """
         all_leaves = get_all_leaf_nodes(self.root_node)
         num_leaves = len(all_leaves)
         top_3_nodes = get_top_3_leaves(all_leaves)
@@ -185,11 +182,7 @@ class MCTSEnvironment:
         final_cr = get_cr(cr, test_passed_reward)
         pr = get_pr(num_leaves)
 
-        # total final reward for the level guesser trajectory
-        total_reward = final_cr + pr
-
-        # return dummy final state, total reward, done=true
-        return "Episode Finished", total_reward, True
+        return final_cr, pr,
 
     # --- internal helpers wrapped from your script ---
     def _select_leaf_node(self, root_node):
