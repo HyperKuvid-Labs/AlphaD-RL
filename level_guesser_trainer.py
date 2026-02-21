@@ -188,12 +188,12 @@ def load_coding_dataset() -> list:
     log.info("Loading HumanEval dataset …")
     try:
         ds = load_dataset(
-            "openai/openai_humaneval", split="test", trust_remote_code=True
+            "openai/openai_humaneval", split="test"   # removed trust_remote_code
         )
     except Exception as exc:
         log.warning(f"Primary dataset load failed ({exc}); trying evalplus/humanevalplus …")
         ds = load_dataset(
-            "evalplus/humanevalplus", split="test", trust_remote_code=True
+            "evalplus/humanevalplus", split="test"    # removed trust_remote_code
         )
     log.info(f"Dataset loaded: {len(ds)} problems")
     return list(ds)
@@ -426,34 +426,36 @@ def train(cfg: TrainConfig = TrainConfig()) -> None:
     writer = SummaryWriter(log_dir=cfg.log_dir)
     log.info(f"TensorBoard logs → {cfg.log_dir}")
 
-    # mem_fraction block removed — let PyTorch manage memory freely on 139 GiB GPU
-
-    # ── load teachers ─────────────────────────────────────────────────────────
     (
         hf_tm1, hf_tm2, hf_tm3,
         tok1,   tok2,   tok3,
         params1, params2, params3,
     ) = load_teachers(cfg, device)
 
-    # ── load student + frozen reference ───────────────────────────────────────
     student, ref_model, student_tok = load_student(cfg, device)
 
-    # ── dataset ───────────────────────────────────────────────────────────────
     problems = load_coding_dataset()
     if cfg.max_problems:
         problems = problems[: cfg.max_problems]
     random.shuffle(problems)
     log.info(f"Training on {len(problems)} problems  |  G={cfg.group_size}")
 
-    # ── optimiser + cosine LR schedule ───────────────────────────────────────
-
-    muon_params = [p for p in student.parameters() if p.dim() == 2]
+    # ── optimiser + cosine LR schedules (one per optimizer) ──────────────────
+    muon_params  = [p for p in student.parameters() if p.dim() == 2]
     other_params = [p for p in student.parameters() if p.dim() != 2]
-    muon_optimizer = torch.optim.Muon(muon_params, lr=1e-3, weight_decay=0.1)
-    other_optimizer = AdamW(other_params, lr=1e-3, weight_decay=0.1)
+
+    muon_optimizer  = torch.optim.SGD(muon_params,  lr=1e-3, momentum=0.9,
+                                      weight_decay=0.1)   # Muon not in stock torch; use SGD
+    other_optimizer = AdamW(other_params, lr=cfg.lr, weight_decay=0.1)
+
     total_opt_steps = max(1, math.ceil(len(problems) / cfg.grad_accum))
-    scheduler = get_cosine_schedule_with_warmup(
+
+    muon_scheduler = get_cosine_schedule_with_warmup(
         muon_optimizer,
+        num_warmup_steps=cfg.warmup_steps,
+        num_training_steps=total_opt_steps,
+    )
+    other_scheduler = get_cosine_schedule_with_warmup(
         other_optimizer,
         num_warmup_steps=cfg.warmup_steps,
         num_training_steps=total_opt_steps,
@@ -466,15 +468,13 @@ def train(cfg: TrainConfig = TrainConfig()) -> None:
         params1, params2, params3,
     )
 
-    # ── training state ────────────────────────────────────────────────────────
     muon_optimizer.zero_grad()
     other_optimizer.zero_grad()
     global_step    = 0
     accum_count    = 0
     running_loss   = 0.0
     running_reward = 0.0
-    window_n       = 0        # problems contributing to the running stats
-    # running sums for TensorBoard per-step aggregation
+    window_n       = 0
     running_pg     = 0.0
     running_kl     = 0.0
     running_ent    = 0.0
@@ -580,7 +580,8 @@ def train(cfg: TrainConfig = TrainConfig()) -> None:
             torch.nn.utils.clip_grad_norm_(student.parameters(), cfg.grad_clip)
             muon_optimizer.step()
             other_optimizer.step()
-            scheduler.step()
+            muon_scheduler.step()    # step both schedulers
+            other_scheduler.step()
             muon_optimizer.zero_grad()
             other_optimizer.zero_grad()
             global_step += 1
@@ -595,7 +596,7 @@ def train(cfg: TrainConfig = TrainConfig()) -> None:
             avg_adv    = running_adv    / window_n
             avg_cr     = running_cr     / window_n
             avg_pr     = running_pr     / window_n
-            cur_lr     = scheduler.get_last_lr()[0]
+            cur_lr     = other_scheduler.get_last_lr()[0]  # use other_scheduler for lr logging
 
             log.info(
                 f"  === optimizer step {global_step}  "
@@ -638,7 +639,8 @@ def train(cfg: TrainConfig = TrainConfig()) -> None:
         torch.nn.utils.clip_grad_norm_(student.parameters(), cfg.grad_clip)
         muon_optimizer.step()
         other_optimizer.step()
-        scheduler.step()
+        muon_scheduler.step()
+        other_scheduler.step()
         muon_optimizer.zero_grad()
         other_optimizer.zero_grad()
         global_step += 1
