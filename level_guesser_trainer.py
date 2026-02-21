@@ -31,6 +31,8 @@ import os
 import math
 import random
 import logging
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from typing import List, Tuple
 
@@ -42,6 +44,7 @@ from transformers import (
     AutoTokenizer,
     AutoModelForCausalLM,
     get_cosine_schedule_with_warmup,
+    StaticCache,
 )
 from datasets import load_dataset
 
@@ -80,6 +83,9 @@ class TrainConfig:
     save_every: int   = 50                 # checkpoint every N problems
     save_dir: str     = "checkpoints"
     log_dir:  str     = "runs/alphaD_rl"   # TensorBoard log directory
+
+    # ── rollout parallelism ───────────────────────────────────────────────────
+    num_rollout_workers: int = 4               # parallel rollout threads
 
     # ── teacher generation ────────────────────────────────────────────────────
     teacher_temperature: float    = 0.7
@@ -178,7 +184,7 @@ def load_student(
 
     # torch.compile for faster student forward passes (requires PyTorch >= 2.0)
     log.info("Compiling student model with torch.compile …")
-    model = torch.compile(model)
+    model = torch.compile(model, mode="reduce-overhead", fullgraph=False)
 
     return model, ref_model, tok
 
@@ -239,6 +245,21 @@ def run_rollout(
     states:  List[str] = []
     actions: List[str] = []
 
+    # Pre-allocate a static KV-cache once per rollout to avoid repeated
+    # tensor allocation/deallocation on every generate() call.
+    _static_cache: StaticCache | None = None
+    try:
+        _base = getattr(student, "_orig_mod", student)  # unwrap torch.compile
+        _static_cache = StaticCache(
+            config=_base.config,
+            max_batch_size=1,
+            max_cache_len=512 + cfg.student_max_new_tokens,
+            device=device,
+            dtype=torch.bfloat16,
+        )
+    except Exception as _e:
+        log.debug(f"StaticCache unavailable ({_e}); falling back to dynamic cache.")
+
     while True:
         states.append(state)
 
@@ -250,6 +271,9 @@ def run_rollout(
             max_length=512,
         ).to(device)
 
+        if _static_cache is not None:
+            _static_cache.reset()
+
         try:
             output_ids = student.generate(
                 **enc,
@@ -257,10 +281,12 @@ def run_rollout(
                 do_sample=True,
                 temperature=cfg.student_temperature,
                 pad_token_id=tok.pad_token_id,
+                past_key_values=_static_cache,
                 use_cache=True,
             )
-        except AttributeError as e:
-            log.warning(f"student.generate sampling failed ({e}), falling back to greedy")
+        except (AttributeError, Exception) as e:
+            log.warning(f"student.generate with StaticCache failed ({e}), falling back to greedy")
+            _static_cache = None  # disable for remainder of rollout
             output_ids = student.generate(
                 **enc,
                 max_new_tokens=cfg.student_max_new_tokens,
@@ -299,6 +325,89 @@ def run_rollout(
             break
 
     return states, actions, final_cr, final_pr
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Parallel rollout collection
+# ──────────────────────────────────────────────────────────────────────────────
+
+# Lock to serialise student.generate calls across rollout threads on a single GPU.
+# Teachers run concurrently (they're in eval + no_grad); only student needs this.
+_student_gen_lock = threading.Lock()
+
+
+def run_group_rollouts(
+    student: AutoModelForCausalLM,
+    student_tok: AutoTokenizer,
+    hf_tm1, hf_tm2, hf_tm3,
+    tok1, tok2, tok3,
+    params1, params2, params3,
+    problem: dict,
+    cfg: TrainConfig,
+    device: torch.device,
+    prob_idx: int,
+    writer: SummaryWriter,
+) -> Tuple[List[Tuple[List[str], List[str]]], List[float], List[float]]:
+    """
+    Run cfg.group_size rollouts using a ThreadPoolExecutor.
+    Each rollout gets its own MCTSEnvironment (but shares the underlying
+    teacher model objects safely — they are in eval+no_grad mode).
+    """
+    prompt     = problem["prompt"]
+    test_str   = problem.get("test", "")
+    entrypoint = problem.get("entry_point", "solution")
+
+    group_results: list = [None] * cfg.group_size
+
+    def _run_one(g: int):
+        env = MCTSEnvironment(
+            hf_tm1, hf_tm2, hf_tm3,
+            tok1,   tok2,   tok3,
+            params1, params2, params3,
+        )
+        with _student_gen_lock:
+            return g, run_rollout(
+                student, student_tok, env,
+                prompt, test_str, entrypoint,
+                cfg, device,
+            )
+
+    with ThreadPoolExecutor(max_workers=cfg.num_rollout_workers) as pool:
+        futures = {pool.submit(_run_one, g): g for g in range(cfg.group_size)}
+        for future in as_completed(futures):
+            try:
+                g, result = future.result()
+                group_results[g] = result
+            except Exception as exc:
+                g = futures[future]
+                log.warning(f"    rollout {g + 1} failed: {exc}")
+
+    group_trajectories: List[Tuple[List[str], List[str]]] = []
+    group_cr: List[float] = []
+    group_pr: List[float] = []
+
+    for g, result in enumerate(group_results):
+        if result is None:
+            group_trajectories.append(([], []))
+            group_cr.append(0.0)
+            group_pr.append(0.0)
+            continue
+        states, actions, cr, pr = result
+        group_trajectories.append((states, actions))
+        group_cr.append(cr)
+        group_pr.append(pr)
+        rollout_global = prob_idx * cfg.group_size + g
+        writer.add_scalar("rollout/cr",      cr,           rollout_global)
+        writer.add_scalar("rollout/pr",      pr,           rollout_global)
+        writer.add_scalar("rollout/total_r", cr + pr,      rollout_global)
+        writer.add_scalar("rollout/steps",   len(actions), rollout_global)
+        log.info(
+            f"    rollout {g + 1}/{cfg.group_size}  "
+            f"steps={len(actions):>2}  cr={cr:+.3f}  "
+            f"pr={pr:+.3f}"
+        )
+
+    return group_trajectories, group_cr, group_pr
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -374,11 +483,12 @@ def compute_grpo_loss(
                 continue
 
             # ── student forward (grad required) ──────────────────────────────
-            out_s      = student(**enc)
+            with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+                out_s    = student(**enc)
             logits_s   = out_s.logits   # [1, seq_len, vocab]
 
             # ── reference forward (no grad) ───────────────────────────────────
-            with torch.no_grad():
+            with torch.no_grad(), torch.autocast(device_type="cuda", dtype=torch.bfloat16):
                 out_r    = ref_model(**enc)
                 logits_r = out_r.logits
 
@@ -464,7 +574,7 @@ def train(cfg: TrainConfig = TrainConfig()) -> None:
 
     muon_optimizer  = torch.optim.SGD(muon_params,  lr=1e-3, momentum=0.9,
                                       weight_decay=0.1)   # Muon not in stock torch; use SGD
-    other_optimizer = AdamW(other_params, lr=cfg.lr, weight_decay=0.1)
+    other_optimizer = AdamW(other_params, lr=cfg.lr, weight_decay=0.1, fused=True)
 
     total_opt_steps = max(1, math.ceil(len(problems) / cfg.grad_accum))
 
@@ -479,15 +589,8 @@ def train(cfg: TrainConfig = TrainConfig()) -> None:
         num_training_steps=total_opt_steps,
     )
 
-    # ── shared MCTS environment ───────────────────────────────────────────────
-    env = MCTSEnvironment(
-        hf_tm1, hf_tm2, hf_tm3,
-        tok1,   tok2,   tok3,
-        params1, params2, params3,
-    )
-
-    muon_optimizer.zero_grad()
-    other_optimizer.zero_grad()
+    muon_optimizer.zero_grad(set_to_none=True)
+    other_optimizer.zero_grad(set_to_none=True)
     global_step    = 0
     accum_count    = 0
     running_loss   = 0.0
@@ -502,47 +605,20 @@ def train(cfg: TrainConfig = TrainConfig()) -> None:
     running_pr     = 0.0
 
     for prob_idx, problem in enumerate(problems):
-        prompt     = problem["prompt"]
-        test_str   = problem.get("test", "")
         entrypoint = problem.get("entry_point", "solution")
 
         log.info(
             f"[{prob_idx + 1:>4}/{len(problems)}]  entry_point={entrypoint!r}"
         )
 
-        # ── collect G rollouts ────────────────────────────────────────────────
-        group_trajectories: List[Tuple[List[str], List[str]]] = []
-        group_cr:      List[float] = []
-        grpo_pr :      List[float] = []
-
-        for g in range(cfg.group_size):
-            try:
-                states, actions, cr, pr = run_rollout(
-                    student, student_tok, env,
-                    prompt, test_str, entrypoint,
-                    cfg, device,
-                )
-                # changing to gdpo, so need to treat them as seperate
-                # total_r = cr + pr
-                group_cr.append(cr)
-                grpo_pr.append(pr)
-                group_trajectories.append((states, actions))
-                # group_rewards.append(total_r)
-                rollout_global = prob_idx * cfg.group_size + g
-                writer.add_scalar("rollout/cr",    cr,           rollout_global)
-                writer.add_scalar("rollout/pr",    pr,           rollout_global)
-                writer.add_scalar("rollout/total_r", cr + pr,    rollout_global)
-                writer.add_scalar("rollout/steps", len(actions), rollout_global)
-                log.info(
-                    f"    rollout {g + 1}/{cfg.group_size}  "
-                    f"steps={len(actions):>2}  cr={cr:+.3f}  "
-                    f"pr={pr:+.3f}"
-                )
-            except Exception as exc:
-                log.warning(f"    rollout {g + 1} failed: {exc}")
-                group_trajectories.append(([], []))
-                group_cr.append(0.0)
-                grpo_pr.append(0.0)
+        # ── collect G rollouts (parallel threads) ────────────────────────────
+        group_trajectories, group_cr, grpo_pr = run_group_rollouts(
+            student, student_tok,
+            hf_tm1, hf_tm2, hf_tm3,
+            tok1,   tok2,   tok3,
+            params1, params2, params3,
+            problem, cfg, device, prob_idx, writer,
+        )
 
         # Skip if every rollout failed
         if all(len(t[0]) == 0 for t in group_trajectories):
@@ -560,8 +636,8 @@ def train(cfg: TrainConfig = TrainConfig()) -> None:
             (loss / cfg.grad_accum).backward()
         except Exception as exc:
             log.warning(f"    Loss computation failed: {exc}")
-            muon_optimizer.zero_grad()
-            other_optimizer.zero_grad()
+            muon_optimizer.zero_grad(set_to_none=True)
+            other_optimizer.zero_grad(set_to_none=True)
             continue
 
         mean_cr = sum(group_cr) / len(group_cr)
@@ -600,8 +676,8 @@ def train(cfg: TrainConfig = TrainConfig()) -> None:
             other_optimizer.step()
             muon_scheduler.step()    # step both schedulers
             other_scheduler.step()
-            muon_optimizer.zero_grad()
-            other_optimizer.zero_grad()
+            muon_optimizer.zero_grad(set_to_none=True)
+            other_optimizer.zero_grad(set_to_none=True)
             global_step += 1
             accum_count  = 0
 
@@ -659,8 +735,8 @@ def train(cfg: TrainConfig = TrainConfig()) -> None:
         other_optimizer.step()
         muon_scheduler.step()
         other_scheduler.step()
-        muon_optimizer.zero_grad()
-        other_optimizer.zero_grad()
+        muon_optimizer.zero_grad(set_to_none=True)
+        other_optimizer.zero_grad(set_to_none=True)
         global_step += 1
 
     # ── final save ────────────────────────────────────────────────────────────
