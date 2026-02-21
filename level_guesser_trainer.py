@@ -124,8 +124,8 @@ def load_teachers(cfg: TrainConfig, device: torch.device):
         hf = AutoModelForCausalLM.from_pretrained(
             mid,
             trust_remote_code=True,
-            torch_dtype=torch.bfloat16,
-            attn_implementation="flash_attention_2",
+            dtype=torch.bfloat16,
+            attn_implementation="eager",
         ).to(device)
         hf.eval()
         tokenizers.append(tok)
@@ -159,8 +159,8 @@ def load_student(
     model = AutoModelForCausalLM.from_pretrained(
         cfg.student_model_id,
         trust_remote_code=True,
-        torch_dtype=torch.bfloat16,
-        attn_implementation="flash_attention_2",
+        dtype=torch.bfloat16,
+        attn_implementation="eager",
     ).to(device)
     model.train()  # set the model in training mode (for dropout, etc)
 
@@ -169,8 +169,8 @@ def load_student(
     ref_model = AutoModelForCausalLM.from_pretrained(
         cfg.student_model_id,
         trust_remote_code=True,
-        torch_dtype=torch.bfloat16,
-        attn_implementation="flash_attention_2",
+        dtype=torch.bfloat16,
+        attn_implementation="eager",
     ).to(device)
     ref_model.eval()
     for p in ref_model.parameters():
