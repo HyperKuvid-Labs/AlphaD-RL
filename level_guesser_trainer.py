@@ -32,6 +32,7 @@ import math
 import random
 import logging
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from typing import List, Tuple
@@ -123,7 +124,8 @@ def load_teachers(cfg: TrainConfig, device: torch.device):
     tokenizers: list = []
 
     for mid in model_ids:
-        log.info(f"Loading teacher HF model: {mid}")
+        log.info(f"[LOAD] teacher {mid} — starting")
+        _t0 = time.perf_counter()
         tok = AutoTokenizer.from_pretrained(mid, trust_remote_code=True)
         if tok.pad_token is None:
             tok.pad_token = tok.eos_token
@@ -136,6 +138,9 @@ def load_teachers(cfg: TrainConfig, device: torch.device):
         hf.eval()
         tokenizers.append(tok)
         hf_models.append(hf)
+        _load_s = time.perf_counter() - _t0
+        _mem = torch.cuda.memory_allocated(device) / 1e9 if device.type == "cuda" else 0.0
+        log.info(f"[LOAD] teacher {mid} — done in {_load_s:.1f}s  |  GPU mem: {_mem:.2f} GB")
 
     params = [_build_gen_params(cfg)] * 3
 
@@ -154,7 +159,8 @@ def load_student(
     Returns (student, ref_model, tokenizer).
     ref_model is a frozen copy used for the KL penalty in GRPO.
     """
-    log.info(f"Loading student model: {cfg.student_model_id}")
+    log.info(f"[LOAD] student {cfg.student_model_id} — starting")
+    _t0 = time.perf_counter()
 
     tok = AutoTokenizer.from_pretrained(
         cfg.student_model_id, trust_remote_code=True
@@ -169,9 +175,12 @@ def load_student(
         attn_implementation="eager",
     ).to(device)
     model.train()  # set the model in training mode (for dropout, etc)
+    _mem = torch.cuda.memory_allocated(device) / 1e9 if device.type == "cuda" else 0.0
+    log.info(f"[LOAD] student weights loaded in {time.perf_counter()-_t0:.1f}s  |  GPU mem: {_mem:.2f} GB")
 
     # Frozen reference copy — same weights, no grad
     log.info("Loading frozen reference copy of student for KL penalty …")
+    _t1 = time.perf_counter()
     ref_model = AutoModelForCausalLM.from_pretrained(
         cfg.student_model_id,
         trust_remote_code=True,
@@ -181,10 +190,14 @@ def load_student(
     ref_model.eval()
     for p in ref_model.parameters():
         p.requires_grad_(False)
+    _mem = torch.cuda.memory_allocated(device) / 1e9 if device.type == "cuda" else 0.0
+    log.info(f"[LOAD] ref model loaded in {time.perf_counter()-_t1:.1f}s  |  GPU mem: {_mem:.2f} GB")
 
     # torch.compile for faster student forward passes (requires PyTorch >= 2.0)
     log.info("Compiling student model with torch.compile …")
+    _t2 = time.perf_counter()
     model = torch.compile(model, mode="reduce-overhead", fullgraph=False)
+    log.info(f"[LOAD] torch.compile done in {time.perf_counter()-_t2:.1f}s")
 
     return model, ref_model, tok
 
@@ -241,7 +254,11 @@ def run_rollout(
     final_cr : completion reward from MCTSEnvironment._terminate_and_evaluate
     final_pr : prune reward
     """
+    _rollout_t0 = time.perf_counter()
+    log.debug(f"[ROLLOUT] env.reset starting (golden solution generation) …")
+    _reset_t0 = time.perf_counter()
     state: str = env.reset(prompt, test, entrypoint)
+    log.debug(f"[ROLLOUT] env.reset done in {time.perf_counter()-_reset_t0:.2f}s")
     states:  List[str] = []
     actions: List[str] = []
 
@@ -260,10 +277,13 @@ def run_rollout(
     except Exception as _e:
         log.debug(f"StaticCache unavailable ({_e}); falling back to dynamic cache.")
 
+    _step_idx = 0
     while True:
         states.append(state)
+        _step_idx += 1
 
         # Tokenise state and sample from the student
+        _gen_t0 = time.perf_counter()
         enc = tok(
             state,
             return_tensors="pt",
@@ -298,8 +318,14 @@ def run_rollout(
         gen_ids     = output_ids[0, enc["input_ids"].shape[1]:]
         action_text = tok.decode(gen_ids, skip_special_tokens=True).strip()
         actions.append(action_text)
+        log.debug(
+            f"[ROLLOUT] step {_step_idx}  student.generate: {time.perf_counter()-_gen_t0:.3f}s  "
+            f"action={action_text!r}  state={state[:60]!r}"
+        )
 
+        _step_t0 = time.perf_counter()
         result = env.step(action_text)
+        log.debug(f"[ROLLOUT] step {_step_idx}  env.step: {time.perf_counter()-_step_t0:.3f}s")
 
         # MCTSEnvironment.step returns:
         #   • (next_state_str, 0.0, False)   — intermediate step
@@ -311,6 +337,11 @@ def run_rollout(
         ):
             # Terminal: (completion_reward, prune_reward)
             final_cr, final_pr = float(result[0]), float(result[1])
+            log.debug(
+                f"[ROLLOUT] terminal at step {_step_idx}  "
+                f"cr={final_cr:+.3f}  pr={final_pr:+.3f}  "
+                f"total_elapsed={time.perf_counter()-_rollout_t0:.2f}s"
+            )
             break
         elif isinstance(result, tuple) and len(result) == 3:
             next_state, _intermediate, done = result
@@ -323,6 +354,12 @@ def run_rollout(
             final_cr, final_pr = 0.0, 0.0
             break
 
+    _rollout_elapsed = time.perf_counter() - _rollout_t0
+    log.info(
+        f"[ROLLOUT] done  steps={len(actions)}  cr={final_cr:+.3f}  pr={final_pr:+.3f}  "
+        f"elapsed={_rollout_elapsed:.2f}s  "
+        f"avg_step={_rollout_elapsed/max(len(actions),1):.2f}s/step"
+    )
     return states, actions, final_cr, final_pr
 
 
@@ -357,14 +394,20 @@ def run_group_rollouts(
     entrypoint = problem.get("entry_point", "solution")
 
     group_results: list = [None] * cfg.group_size
+    _group_t0 = time.perf_counter()
+    log.info(f"[GROUP] starting {cfg.group_size} rollouts (workers={cfg.num_rollout_workers})")
 
     def _run_one(g: int):
+        _wait_t0 = time.perf_counter()
+        log.debug(f"[GROUP] rollout {g+1} waiting for student_gen_lock …")
         env = MCTSEnvironment(
             hf_tm1, hf_tm2, hf_tm3,
             tok1,   tok2,   tok3,
             params1, params2, params3,
         )
         with _student_gen_lock:
+            _lock_wait = time.perf_counter() - _wait_t0
+            log.debug(f"[GROUP] rollout {g+1} acquired lock after {_lock_wait:.2f}s")
             return g, run_rollout(
                 student, student_tok, env,
                 prompt, test_str, entrypoint,
@@ -406,6 +449,12 @@ def run_group_rollouts(
             f"pr={pr:+.3f}"
         )
 
+    _group_elapsed = time.perf_counter() - _group_t0
+    _valid = sum(1 for r in group_results if r is not None)
+    log.info(
+        f"[GROUP] all rollouts done  valid={_valid}/{cfg.group_size}  "
+        f"total={_group_elapsed:.2f}s  avg={_group_elapsed/cfg.group_size:.2f}s/rollout"
+    )
     return group_trajectories, group_cr, group_pr
 
 
@@ -455,6 +504,9 @@ def compute_grpo_loss(
 
     advantages = [a_cr + a_pr for a_cr, a_pr in zip(advantages_cr, advantages_pr)]
 
+    _loss_t0     = time.perf_counter()
+    _fwd_s_total = 0.0
+    _fwd_r_total = 0.0
     total_loss   = torch.zeros(1, device=device, requires_grad=False)
     n_steps      = 0
     sum_pg_loss  = 0.0
@@ -482,14 +534,18 @@ def compute_grpo_loss(
                 continue
 
             # ── student forward (grad required) ──────────────────────────────
+            _fwd_s_t = time.perf_counter()
             with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
                 out_s    = student(**enc)
+            _fwd_s_total += time.perf_counter() - _fwd_s_t
             logits_s   = out_s.logits   # [1, seq_len, vocab]
 
             # ── reference forward (no grad) ───────────────────────────────────
+            _fwd_r_t = time.perf_counter()
             with torch.no_grad(), torch.autocast(device_type="cuda", dtype=torch.bfloat16):
                 out_r    = ref_model(**enc)
                 logits_r = out_r.logits
+            _fwd_r_total += time.perf_counter() - _fwd_r_t
 
             # Gather logit slices that predict the action tokens.
             # Token at position t is predicted by logits[:, t-1, :].
@@ -526,6 +582,13 @@ def compute_grpo_loss(
 
     if n_steps > 0:
         total_loss = total_loss / n_steps
+
+    _loss_elapsed = time.perf_counter() - _loss_t0
+    log.debug(
+        f"[GRPO_LOSS] n_steps={n_steps}  total={_loss_elapsed:.3f}s  "
+        f"student_fwd={_fwd_s_total:.3f}s  ref_fwd={_fwd_r_total:.3f}s  "
+        f"other={_loss_elapsed - _fwd_s_total - _fwd_r_total:.3f}s"
+    )
 
     metrics = {
         "pg_loss":      sum_pg_loss / max(n_steps, 1),
@@ -606,11 +669,15 @@ def train(cfg: TrainConfig = TrainConfig()) -> None:
     for prob_idx, problem in enumerate(problems):
         entrypoint = problem.get("entry_point", "solution")
 
+        _prob_t0 = time.perf_counter()
+        _mem_before = torch.cuda.memory_allocated(device) / 1e9 if device.type == "cuda" else 0.0
         log.info(
-            f"[{prob_idx + 1:>4}/{len(problems)}]  entry_point={entrypoint!r}"
+            f"[{prob_idx + 1:>4}/{len(problems)}]  entry_point={entrypoint!r}  "
+            f"GPU mem: {_mem_before:.2f} GB"
         )
 
         # ── collect G rollouts (parallel threads) ────────────────────────────
+        _rollouts_t0 = time.perf_counter()
         group_trajectories, group_cr, grpo_pr = run_group_rollouts(
             student, student_tok,
             hf_tm1, hf_tm2, hf_tm3,
@@ -619,12 +686,16 @@ def train(cfg: TrainConfig = TrainConfig()) -> None:
             problem, cfg, device, prob_idx, writer,
         )
 
+        _rollouts_elapsed = time.perf_counter() - _rollouts_t0
+        log.info(f"[TIMING] rollout collection: {_rollouts_elapsed:.2f}s")
+
         # Skip if every rollout failed
         if all(len(t[0]) == 0 for t in group_trajectories):
             log.warning("    All rollouts failed — skipping problem.")
             continue
 
         # ── compute GRPO loss ─────────────────────────────────────────────────
+        _loss_t0 = time.perf_counter()
         try:
             loss, loss_metrics = compute_grpo_loss(
                 student, ref_model, student_tok,
@@ -632,12 +703,15 @@ def train(cfg: TrainConfig = TrainConfig()) -> None:
                 cfg, device,
             )
             # Scale for gradient accumulation before backward
+            _bwd_t0 = time.perf_counter()
             (loss / cfg.grad_accum).backward()
+            log.debug(f"[TIMING] backward pass: {time.perf_counter()-_bwd_t0:.3f}s")
         except Exception as exc:
             log.warning(f"    Loss computation failed: {exc}")
             muon_optimizer.zero_grad(set_to_none=True)
             other_optimizer.zero_grad(set_to_none=True)
             continue
+        log.info(f"[TIMING] loss+backward: {time.perf_counter()-_loss_t0:.2f}s  loss={loss.item():.4f}  n_steps={loss_metrics['n_steps']}")
 
         mean_cr = sum(group_cr) / len(group_cr)
         mean_pr = sum(grpo_pr) / len(grpo_pr)
@@ -668,8 +742,17 @@ def train(cfg: TrainConfig = TrainConfig()) -> None:
         writer.add_scalar("problem/adv_max",  loss_metrics["adv_max"],    prob_idx)
         writer.add_scalar("problem/adv_min",  loss_metrics["adv_min"],    prob_idx)
 
+        _prob_elapsed = time.perf_counter() - _prob_t0
+        _mem_after = torch.cuda.memory_allocated(device) / 1e9 if device.type == "cuda" else 0.0
+        log.info(
+            f"[TIMING] problem {prob_idx+1} total: {_prob_elapsed:.2f}s  "
+            f"GPU mem: {_mem_after:.2f} GB  "
+            f"(delta={_mem_after - _mem_before:+.2f} GB)"
+        )
+
         # ── gradient step after every grad_accum problems ─────────────────────
         if accum_count >= cfg.grad_accum:
+            _opt_t0 = time.perf_counter()
             torch.nn.utils.clip_grad_norm_(student.parameters(), cfg.grad_clip)
             muon_optimizer.step()
             other_optimizer.step()
@@ -679,6 +762,7 @@ def train(cfg: TrainConfig = TrainConfig()) -> None:
             other_optimizer.zero_grad(set_to_none=True)
             global_step += 1
             accum_count  = 0
+            log.info(f"[TIMING] optimizer step {global_step}: {time.perf_counter()-_opt_t0:.3f}s")
 
             avg_loss   = running_loss   / window_n
             avg_reward = running_reward / window_n
