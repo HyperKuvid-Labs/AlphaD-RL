@@ -243,13 +243,24 @@ def run_rollout(
             max_length=512,
         ).to(device)
 
-        output_ids = student.generate(
-            **enc,
-            max_new_tokens=cfg.student_max_new_tokens,
-            do_sample=True,
-            temperature=cfg.student_temperature,
-            pad_token_id=tok.pad_token_id,
-        )
+        try:
+            output_ids = student.generate(
+                **enc,
+                max_new_tokens=cfg.student_max_new_tokens,
+                do_sample=True,
+                temperature=cfg.student_temperature,
+                pad_token_id=tok.pad_token_id,
+                use_cache=False,
+            )
+        except AttributeError as e:
+            log.warning(f"student.generate sampling failed ({e}), falling back to greedy")
+            output_ids = student.generate(
+                **enc,
+                max_new_tokens=cfg.student_max_new_tokens,
+                do_sample=False,
+                pad_token_id=tok.pad_token_id,
+                use_cache=False,
+            )
 
         # Extract only newly generated tokens
         gen_ids     = output_ids[0, enc["input_ids"].shape[1]:]

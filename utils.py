@@ -13,14 +13,25 @@ def _hf_generate(model, tokenizer, prompts, params):
             prompt, return_tensors="pt", truncation=True, max_length=2048
         ).to(device)
         with torch.no_grad():
-            output_ids = model.generate(
-                **inputs,
-                max_new_tokens=params.get("max_new_tokens", 512),
-                temperature=params.get("temperature", 0.7),
-                top_p=params.get("top_p", 1.0),
-                do_sample=do_sample,
-                pad_token_id=tokenizer.pad_token_id or tokenizer.eos_token_id,
-            )
+            try:
+                output_ids = model.generate(
+                    **inputs,
+                    max_new_tokens=params.get("max_new_tokens", 512),
+                    temperature=params.get("temperature", 0.7),
+                    top_p=params.get("top_p", 1.0),
+                    do_sample=do_sample,
+                    pad_token_id=tokenizer.pad_token_id or tokenizer.eos_token_id,
+                    use_cache=False,
+                )
+            except AttributeError as e:
+                print(f"[WARNING] _hf_generate sampling failed ({e}), falling back to greedy")
+                output_ids = model.generate(
+                    **inputs,
+                    max_new_tokens=params.get("max_new_tokens", 512),
+                    do_sample=False,
+                    pad_token_id=tokenizer.pad_token_id or tokenizer.eos_token_id,
+                    use_cache=False,
+                )
         gen_ids = output_ids[0, inputs["input_ids"].shape[1]:]
         text = tokenizer.decode(gen_ids, skip_special_tokens=True)
         results.append({"text": text})
