@@ -124,7 +124,8 @@ def load_teachers(cfg: TrainConfig, device: torch.device):
         hf = AutoModelForCausalLM.from_pretrained(
             mid,
             trust_remote_code=True,
-            dtype=torch.bfloat16,          # fixed: was torch_dtype=
+            torch_dtype=torch.bfloat16,
+            attn_implementation="flash_attention_2",
         ).to(device)
         hf.eval()
         tokenizers.append(tok)
@@ -158,7 +159,8 @@ def load_student(
     model = AutoModelForCausalLM.from_pretrained(
         cfg.student_model_id,
         trust_remote_code=True,
-        dtype=torch.bfloat16,              # fixed: was torch_dtype=
+        torch_dtype=torch.bfloat16,
+        attn_implementation="flash_attention_2",
     ).to(device)
     model.train()  # set the model in training mode (for dropout, etc)
 
@@ -167,11 +169,16 @@ def load_student(
     ref_model = AutoModelForCausalLM.from_pretrained(
         cfg.student_model_id,
         trust_remote_code=True,
-        dtype=torch.bfloat16,              # fixed: was torch_dtype=
+        torch_dtype=torch.bfloat16,
+        attn_implementation="flash_attention_2",
     ).to(device)
     ref_model.eval()
     for p in ref_model.parameters():
         p.requires_grad_(False)
+
+    # torch.compile for faster student forward passes (requires PyTorch >= 2.0)
+    log.info("Compiling student model with torch.compile …")
+    model = torch.compile(model)
 
     return model, ref_model, tok
 
@@ -250,7 +257,7 @@ def run_rollout(
                 do_sample=True,
                 temperature=cfg.student_temperature,
                 pad_token_id=tok.pad_token_id,
-                use_cache=False,
+                use_cache=True,
             )
         except AttributeError as e:
             log.warning(f"student.generate sampling failed ({e}), falling back to greedy")
