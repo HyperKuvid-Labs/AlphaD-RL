@@ -84,7 +84,7 @@ class TrainConfig:
     # ── teacher generation ────────────────────────────────────────────────────
     teacher_temperature: float    = 0.7
     teacher_max_new_tokens: int   = 1024
-    mem_fraction: float           = 0.25   # per-process GPU memory fraction (all models)
+
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Model loading
@@ -124,7 +124,7 @@ def load_teachers(cfg: TrainConfig, device: torch.device):
         hf = AutoModelForCausalLM.from_pretrained(
             mid,
             trust_remote_code=True,
-            torch_dtype=torch.bfloat16,
+            dtype=torch.bfloat16,          # fixed: was torch_dtype=
         ).to(device)
         hf.eval()
         tokenizers.append(tok)
@@ -133,9 +133,9 @@ def load_teachers(cfg: TrainConfig, device: torch.device):
     params = [_build_gen_params(cfg)] * 3
 
     return (
-        *hf_models,   # hf_tm1, hf_tm2, hf_tm3
-        *tokenizers,  # tok1, tok2, tok3
-        *params,      # params1, params2, params3
+        *hf_models,
+        *tokenizers,
+        *params,
     )
 
 
@@ -158,7 +158,7 @@ def load_student(
     model = AutoModelForCausalLM.from_pretrained(
         cfg.student_model_id,
         trust_remote_code=True,
-        torch_dtype=torch.bfloat16,
+        dtype=torch.bfloat16,              # fixed: was torch_dtype=
     ).to(device)
     model.train()  # set the model in training mode (for dropout, etc)
 
@@ -167,7 +167,7 @@ def load_student(
     ref_model = AutoModelForCausalLM.from_pretrained(
         cfg.student_model_id,
         trust_remote_code=True,
-        torch_dtype=torch.bfloat16,
+        dtype=torch.bfloat16,              # fixed: was torch_dtype=
     ).to(device)
     ref_model.eval()
     for p in ref_model.parameters():
@@ -426,11 +426,7 @@ def train(cfg: TrainConfig = TrainConfig()) -> None:
     writer = SummaryWriter(log_dir=cfg.log_dir)
     log.info(f"TensorBoard logs → {cfg.log_dir}")
 
-    # ── apply GPU memory fraction for all models ──────────────────────────────
-    if device.type == "cuda":
-        device_index = device.index if device.index is not None else 0
-        torch.cuda.set_per_process_memory_fraction(cfg.mem_fraction, device=device_index)
-        log.info(f"GPU memory fraction set to {cfg.mem_fraction}")
+    # mem_fraction block removed — let PyTorch manage memory freely on 139 GiB GPU
 
     # ── load teachers ─────────────────────────────────────────────────────────
     (
