@@ -12,10 +12,3 @@ pip install nvidia-cudnn-cu12==9.16.0.29
 # uv sync
 echo "installing torch and transformers"
 pip install torch transformers datasets trl
-
-echo "installing verl"
-cd ..
-git clone https://github.com/volcengine/verl
-cd verl
-pip install -e .
-cd ../AlphaD-RL
