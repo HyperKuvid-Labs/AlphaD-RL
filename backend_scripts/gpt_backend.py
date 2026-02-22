@@ -13,7 +13,7 @@ class PromptRequest(BaseModel):
 @app.on_event("startup")
 def startup_event():
     global model
-    model = sgl.Engine("openai/gpt-oss-20b", context_length=4096)
+    model = sgl.Engine("openai/gpt-oss-20b")
 
 
 @app.on_event("shutdown")

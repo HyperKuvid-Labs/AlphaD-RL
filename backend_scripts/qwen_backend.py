@@ -13,7 +13,7 @@ class PromptRequest(BaseModel):
 @app.on_event("startup")
 def startup_event():
     global model
-    model = sgl.Engine("Qwen/Qwen2.5-Coder-14B-Instruct", context_length=4096)
+    model = sgl.Engine("Qwen/Qwen2.5-Coder-14B-Instruct")
 
 
 @app.on_event("shutdown")

@@ -14,7 +14,7 @@ class PromptRequest(BaseModel):
 @app.on_event("startup")
 def startup_event():
     global model
-    model = sgl.Engine("deepseek-ai/DeepSeek-Coder-V2-Lite-Instruct", context_length=4096)
+    model = sgl.Engine("deepseek-ai/DeepSeek-Coder-V2-Lite-Instruct")
 
 
 @app.on_event("shutdown")
