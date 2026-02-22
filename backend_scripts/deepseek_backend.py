@@ -35,7 +35,7 @@ def get_resp(data: PromptRequest):
 
 @app.get("/tokenizer")
 def get_tokenizer():
-    tokenizer = AutoTokenizer.from_pretrained("deepseek-ai/DeepSeek-Coder-V2-Lite-Instruct")
+    tokenizer = AutoTokenizer.from_pretrained("mistralai/Codestral-22B-v0.1")
     return {"tokenizer": tokenizer}
 
 if __name__ == "__main__":
