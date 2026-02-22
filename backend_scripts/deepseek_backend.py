@@ -11,9 +11,7 @@ async def lifespan(app: FastAPI):
     global model
     model = sgl.Engine(
         model_path="deepseek-ai/DeepSeek-Coder-V2-Lite-Instruct",
-        context_length=4096,
-        trust_remote_code=True,
-        model_impl="sglang",
+        context_length=4096
     )
     yield
     if model is not None:
