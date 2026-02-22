@@ -1,3 +1,54 @@
+import requests
+
+# ── Teacher backend registry ─────────────────────────────────────────────────
+# Maps each teacher model ID → SGLang server base URL.
+# Long-form generations (best solutions, continuations, process-reward scoring)
+# are routed to these hosted SGLang endpoints via HTTP.
+# Token-level logprob queries (expand_leaf / get_next_token_logprobs_hf) still
+# run on the locally-loaded HF models — they need access to the raw logits.
+TEACHER_ENDPOINTS: dict = {
+    "openai/gpt-oss-20b":                          "http://PLACEHOLDER_IP_1:8000",
+    "Qwen/Qwen2.5-Coder-14B-Instruct":             "http://PLACEHOLDER_IP_2:8000",
+    "deepseek-ai/DeepSeek-Coder-V2-Lite-Instruct": "http://PLACEHOLDER_IP_3:8000",
+}
+
+# Ordered list: index 0 = tm1 (GPT), 1 = tm2 (Qwen), 2 = tm3 (DeepSeek)
+TEACHER_MODEL_IDS: list = list(TEACHER_ENDPOINTS.keys())
+
+def _sglang_generate(model_id: str, prompts: list, params: dict) -> list:
+    """
+    Send long-form generation requests to a hosted SGLang/FastAPI server.
+
+    Calls POST <base_url>/resp for each prompt and returns a list of dicts
+    with key 'text', matching the interface of _hf_generate so call-sites are
+    interchangeable.
+
+    Use this for:
+      - generate_best_solution   (up to 1024 tokens per teacher)
+      - continuation completions in _terminate_and_evaluate
+      - get_process_reward scoring
+
+    Do NOT use this for get_next_token_logprobs_hf / expand_leaf — those need
+    raw logit tensors and must stay on the local HF model.
+    """
+    base_url = TEACHER_ENDPOINTS[model_id]
+    results = []
+    for prompt in prompts:
+        payload = {
+            "prompt": prompt,
+            "max_tokens": params.get("max_new_tokens", 1024),
+            "temperature": params.get("temperature", 0.7),
+        }
+        try:
+            resp = requests.post(f"{base_url}/resp", json=payload, timeout=120)
+            resp.raise_for_status()
+            results.append({"text": resp.json()["response"]})
+        except Exception as e:
+            print(f"[WARNING] _sglang_generate({model_id}) failed: {e}")
+            results.append({"text": ""})
+    return results
+
+
 def _hf_generate(model, tokenizer, prompts, params):
     """
     Run HF model.generate() for a list of prompts.
@@ -122,9 +173,10 @@ def generate_best_solution(prompt: str, tm1, tm2, tm3, tok1, tok2, tok3, params1
       "4. Output the Python code and NOTHING ELSE — not a single word outside the code."
   )
   gen_params = {"temperature": 0.5, "top_p": 1.0, "max_new_tokens": 1024}
-  output1 = _hf_generate(tm1, tok1, [prompt], gen_params)
-  output2 = _hf_generate(tm2, tok2, [prompt], gen_params)
-  output3 = _hf_generate(tm3, tok3, [prompt], gen_params)
+  # Long generation → SGLang hosted backends
+  output1 = _sglang_generate(TEACHER_MODEL_IDS[0], [prompt], gen_params)
+  output2 = _sglang_generate(TEACHER_MODEL_IDS[1], [prompt], gen_params)
+  output3 = _sglang_generate(TEACHER_MODEL_IDS[2], [prompt], gen_params)
 
   best_output_index=get_best_solution(output1[0]['text'],output2[0]['text'],output3[0]['text'])
   best_output = [output1[0]['text'], output2[0]['text'], output3[0]['text']][best_output_index]
@@ -236,9 +288,10 @@ def get_process_reward(prompt : str, best_solution :str , partial_solution :str,
   You only ouput the float score without any additional text or explanation.Not even any labels or indentation. Just the number."""
 
   score_params = {"temperature": 0.1, "top_p": 1.0, "max_new_tokens": 10}
-  output1 = _hf_generate(teacher_model1, tokenizer1, [final_prompt], score_params)
-  output2 = _hf_generate(teacher_model2, tokenizer2, [final_prompt], score_params)
-  output3 = _hf_generate(teacher_model3, tokenizer3, [final_prompt], score_params)
+  # Short scoring generation → SGLang hosted backends
+  output1 = _sglang_generate(TEACHER_MODEL_IDS[0], [final_prompt], score_params)
+  output2 = _sglang_generate(TEACHER_MODEL_IDS[1], [final_prompt], score_params)
+  output3 = _sglang_generate(TEACHER_MODEL_IDS[2], [final_prompt], score_params)
 
   raw_text1 = output1[0]['text']
   raw_text2 = output2[0]['text']

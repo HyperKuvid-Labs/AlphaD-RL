@@ -50,12 +50,29 @@ from transformers import (
 from datasets import load_dataset
 
 from mcts_env import MCTSEnvironment
+from utils import TEACHER_ENDPOINTS, TEACHER_MODEL_IDS
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
 )
 log = logging.getLogger(__name__)
+
+
+# ── Teacher backend registry (defined in utils.py, shown here for visibility) ────────
+#
+#   TEACHER_ENDPOINTS = {
+#       "openai/gpt-oss-20b"                          : "http://PLACEHOLDER_IP_1:8000",
+#       "Qwen/Qwen2.5-Coder-14B-Instruct"            : "http://PLACEHOLDER_IP_2:8000",
+#       "deepseek-ai/DeepSeek-Coder-V2-Lite-Instruct": "http://PLACEHOLDER_IP_3:8000",
+#   }
+#
+# • Long-form generation  (best solutions, continuation completions, scoring)
+#   → _sglang_generate()   — HTTP POST to the hosted SGLang/FastAPI server
+# • Token-level logprobs   (expand_leaf / get_next_token_logprobs_hf)
+#   → _hf_generate()       — local HF model (logits needed directly)
+#
+# Update the IPs/ports in utils.TEACHER_ENDPOINTS before running.
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -107,18 +124,17 @@ def _build_gen_params(cfg: TrainConfig) -> dict:
 
 def load_teachers(cfg: TrainConfig, device: torch.device):
     """
-    Load all three teacher models via Hugging Face.
+    Load all three teacher models via Hugging Face **for token-level logprob
+    queries** (expand_leaf / get_next_token_logprobs_hf).  Long-form generation
+    is routed to the hosted SGLang servers in TEACHER_ENDPOINTS instead.
 
     Returns:
         hf_tm1, hf_tm2, hf_tm3   - HF AutoModelForCausalLM instances (eval mode)
         tok1, tok2, tok3          - HF AutoTokenizer instances
         params1, params2, params3 - generation kwarg dicts for model.generate()
     """
-    model_ids = [
-        "openai/gpt-oss-20b",
-        "Qwen/Qwen2.5-Coder-7B-Instruct",
-        "deepseek-ai/DeepSeek-Coder-V2-Lite-Instruct",
-    ]
+    # Driven from the central registry so model IDs stay in sync.
+    model_ids = TEACHER_MODEL_IDS  # ["openai/gpt-oss-20b", "Qwen/...", "deepseek-ai/..."]
 
     hf_models:  list = []
     tokenizers: list = []

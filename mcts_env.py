@@ -2,7 +2,12 @@ import os
 import math
 import subprocess
 import re
-from utils import _hf_generate, generate_best_solution, expand_leaf, get_process_reward, get_all_leaf_nodes, get_top_3_leaves, get_drift_reward, get_cr, get_pr
+from utils import (
+    _hf_generate, _sglang_generate,
+    generate_best_solution, expand_leaf, get_process_reward,
+    get_all_leaf_nodes, get_top_3_leaves, get_drift_reward, get_cr, get_pr,
+    TEACHER_MODEL_IDS,
+)
 
 class Node:
     # basic mcts node structure
@@ -125,9 +130,10 @@ class MCTSEnvironment:
             formatted_prompt = f"### Context\n{self.current_prompt}\n### Partial Implementation\n{node.generated_text}\n### Instructions\n1. Complete the code starting exactly from where the partial implementation ends. Do NOT repeat the existing code.\n2. Integrate the Entrypoint: Ensure the logic flows into the `{self.current_entrypoint}` function.\n3. Main Function & Testing: Append a `if __name__ == '__main__':` block.\n4. Validation: Use the following test cases: {self.current_test}.\n5. Output Format: The script must conclude by printing the exact string: 'Passed X out of Y test cases'.\n### Completion:"
             continuation_prompts.append(formatted_prompt)
 
-        outputs1 = _hf_generate(self.hf_tm1, self.tok1, continuation_prompts, self.params1)
-        outputs2 = _hf_generate(self.hf_tm2, self.tok2, continuation_prompts, self.params2)
-        outputs3 = _hf_generate(self.hf_tm3, self.tok3, continuation_prompts, self.params3)
+        # Long continuations → SGLang hosted backends
+        outputs1 = _sglang_generate(TEACHER_MODEL_IDS[0], continuation_prompts, self.params1)
+        outputs2 = _sglang_generate(TEACHER_MODEL_IDS[1], continuation_prompts, self.params2)
+        outputs3 = _sglang_generate(TEACHER_MODEL_IDS[2], continuation_prompts, self.params3)
 
         lengths = []
         test_passed_reward = 1.0
