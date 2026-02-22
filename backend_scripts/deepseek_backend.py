@@ -10,7 +10,7 @@ model = None
 async def lifespan(app: FastAPI):
     global model
     model = sgl.Engine(
-        model_path="deepseek-ai/DeepSeek-Coder-V2-Lite-Instruct",
+        model_path="mistralai/Codestral-22B-v0.1",
         context_length=4096
     )
     yield
