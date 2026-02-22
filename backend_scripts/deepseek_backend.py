@@ -1,28 +1,26 @@
-from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 import sglang as sgl
 from transformers import AutoTokenizer
 
-model = None
-
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    global model
-    model = sgl.Engine(
-        model_path="mistralai/Codestral-22B-v0.1",
-        context_length=4096
-    )
-    yield
-    if model is not None:
-        model.shutdown()  # ensure the model is properly shutdown when the server stops
-
-app = FastAPI(lifespan=lifespan)
+app = FastAPI()
 
 class PromptRequest(BaseModel):
     prompt: str
     max_tokens: int = 2048
     temperature: float = 0.7
+
+@app.on_event("startup")
+def startup_event():
+    global model
+    model = sgl.Engine(model_path="mistralai/Codestral-22B-v0.1", context_length=4096, trust_remote_code=True, mem_fraction_static=0.8, disable_cuda_graph=True)
+
+
+@app.on_event("shutdown")
+def shutdown_event():
+    global model
+    if model is not None:
+        model.shutdown()  # ensure the model is properly shutdown when the server stops
 
 @app.post("/resp")
 def get_resp(data: PromptRequest):
