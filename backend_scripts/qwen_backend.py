@@ -10,11 +10,23 @@ class PromptRequest(BaseModel):
     max_tokens: int = 2048
     temperature: float = 0.7
 
+@app.on_event("startup")
+def startup_event():
+    global model
+    model = sgl.Engine("Qwen/Qwen2.5-Coder-14B-Instruct", context_length=4096)
+
+
+@app.on_event("shutdown")
+def shutdown_event():
+    global model
+    if model is not None:
+        model.shutdown()  # ensure the model is properly shutdown when the server stops
+
 @app.post("/resp")
 def get_resp(data: PromptRequest):
     prompt, max_tokens, temperature = data.prompt, data.max_tokens, data.temperature
 
-    model = sgl.Engine("Qwen/Qwen2.5-Coder-14B-Instruct", context_length=4096)
+    # model = sgl.Engine("Qwen/Qwen2.5-Coder-14B-Instruct", context_length=4096)
     sampling_params = {"temperature": temperature}
 
     resp = model.generate(prompt, sampling_params)
