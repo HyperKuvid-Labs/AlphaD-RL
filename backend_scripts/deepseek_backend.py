@@ -14,7 +14,7 @@ class PromptRequest(BaseModel):
 @app.on_event("startup")
 def startup_event():
     global model
-    model = sgl.Engine("deepseek-ai/DeepSeek-Coder-V2-Lite-Instruct")
+    model = sgl.Engine(model_path="deepseek-ai/DeepSeek-Coder-V2-Lite-Instruct", context_length=4096, trust_remote_code=True)
 
 
 @app.on_event("shutdown")
@@ -27,7 +27,6 @@ def shutdown_event():
 def get_resp(data: PromptRequest):
     prompt, max_tokens, temperature = data.prompt, data.max_tokens, data.temperature
 
-    # model = sgl.Engine("deepseek-ai/DeepSeek-Coder-V2-Lite-Instruct", context_length=4096)
     sampling_params = {"temperature": temperature}
 
     resp = model.generate(prompt, sampling_params)
