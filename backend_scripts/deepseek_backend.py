@@ -1,6 +1,6 @@
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
-import sglang as sgl
+from vllm import LLM, SamplingParams
 from transformers import AutoTokenizer
 
 app = FastAPI()
@@ -13,7 +13,7 @@ class PromptRequest(BaseModel):
 @app.on_event("startup")
 def startup_event():
     global model
-    model = sgl.Engine(model_path="mistralai/Codestral-22B-v0.1", context_length=4096, trust_remote_code=True, mem_fraction_static=0.8, disable_cuda_graph=True)
+    model = LLM(model="mistralai/Codestral-22B-v0.1", trust_remote_code=True, max_num_seqs=1, max_model_len=4096, tensor_parallel_size=1)
 
 
 @app.on_event("shutdown")
@@ -26,10 +26,10 @@ def shutdown_event():
 def get_resp(data: PromptRequest):
     prompt, max_tokens, temperature = data.prompt, data.max_tokens, data.temperature
 
-    sampling_params = {"temperature": temperature}
+    sampling_params = SamplingParams(temperature=temperature, max_tokens=max_tokens)
 
     resp = model.generate(prompt, sampling_params)
-    return {"response": resp['text']}
+    return {"response": resp[0].outputs[0].text}
 
 @app.get("/tokenizer")
 def get_tokenizer():
