@@ -412,6 +412,71 @@ class HumanMCTSEnvironment:
 
     # ── public API ────────────────────────────────────────────────────────────
 
+    @staticmethod
+    def _extract_code(raw: str) -> str:
+        """Strip markdown fences and return clean Python code."""
+        code = re.sub(r'```(?:python)?\n?', '', raw)
+        code = re.sub(r'```', '', code)
+        return code.strip()
+
+    @staticmethod
+    def _parse_time_complexity(code: str) -> Optional[str]:
+        """Return the expression inside O(...) from a '# Time Complexity: O(...)' comment."""
+        m = re.search(r'#\s*[Tt]ime\s*[Cc]omplexity\s*:\s*O\(([^)]+)\)', code)
+        return m.group(1).strip() if m else None
+
+    @staticmethod
+    def _tc_numeric(tc_str: Optional[str]) -> float:
+        """
+        Evaluate O-notation expression at n=100 to get a comparable number.
+        Returns inf if tc_str is None or cannot be evaluated.
+        """
+        if tc_str is None:
+            return float("inf")
+        expr = (
+            tc_str
+            .replace("n", "100")
+            .replace("log n", "math.log(100)")
+            .replace("log(n)", "math.log(100)")
+        )
+        try:
+            return float(eval(expr, {"math": math, "__builtins__": {}}))
+        except Exception:
+            return float("inf")
+
+    def _run_solution_against_tests(
+        self, code: str, test: str, entrypoint: str, label: str
+    ) -> Tuple[bool, str, str]:
+        """
+        Write *code* to a temp file, append the HumanEval check harness,
+        run it and return (passed: bool, stdout, stderr).
+        """
+        os.makedirs("temp_golden_eval", exist_ok=True)
+        path = f"temp_golden_eval/{label}.py"
+        full = (
+            code + "\n\n"
+            + test + "\n\n"
+            + f"try:\n"
+            + f"    check({entrypoint})\n"
+            + f"    print('TestResult: PASS')\n"
+            + f"except Exception as _e:\n"
+            + f"    print(f'TestResult: FAIL: {{_e}}')\n"
+        )
+        with open(path, "w") as fh:
+            fh.write(full)
+        try:
+            res = subprocess.run(
+                ["python", path], capture_output=True, text=True, timeout=10
+            )
+            out, err = res.stdout.strip(), res.stderr.strip()
+        except subprocess.TimeoutExpired:
+            out, err = "(timeout)", ""
+        finally:
+            if os.path.exists(path):
+                os.remove(path)
+        passed = "TestResult: PASS" in out
+        return passed, out, err
+
     def reset(
         self,
         prompt: str,
@@ -437,39 +502,136 @@ class HumanMCTSEnvironment:
         ))
 
         console.print()
-        console.print(f"  [{THEME['dim']}]Collect the best solution from each teacher, then pick the golden one.[/]")
+        console.print(Panel(
+            f"[{THEME['dim']}]Collect the best solution from each teacher.\n"
+            f"Each solution [bold]MUST[/] end with a time-complexity comment, e.g.:\n"
+            f"  [bold cyan]# Time Complexity: O(n log n)[/]\n"
+            f"If the comment is missing, you will be prompted to enter it manually.[/]",
+            border_style="yellow",
+            title="[bold yellow]Instructions[/]",
+        ))
 
         teacher_solutions = _read_teacher_responses(
             self.cfg.teacher_names,
             action_label="Best Solution",
-            hint="Paste this teacher's best / reference solution for the problem.",
+            hint=(
+                "Paste this teacher's best / reference solution.\n"
+                "End the code with:  # Time Complexity: O(<expression in n>)"
+            ),
         )
 
-        # display all three side-by-side summaries so the user can compare
-        section("Choose the Golden Solution")
-        for i, (name, sol) in enumerate(zip(self.cfg.teacher_names, teacher_solutions)):
-            preview = (sol.strip()[:200] + "…") if len(sol.strip()) > 200 else sol.strip()
-            console.print(Panel(
-                Syntax(preview or "(empty)", "python", theme="monokai", word_wrap=True),
-                title=f"[bold cyan][{i}] {name}[/]",
-                border_style="cyan",
-            ))
+        # ── extract code + run tests + collect time complexities ─────────────
+        section("Evaluating Teacher Solutions Against Test Cases")
 
-        best_idx_raw = Prompt.ask(
-            f"  [{THEME['prompt']}]Which teacher's solution is best? Enter index (0 / 1 / 2)[/]",
-            choices=["0", "1", "2"],
-            default="0",
+        eval_results: List[dict] = []  # keys: name, code, passed, tc_str, out, err
+
+        for i, (name, raw_sol) in enumerate(zip(self.cfg.teacher_names, teacher_solutions)):
+            code = self._extract_code(raw_sol)
+            tc_str = self._parse_time_complexity(code)
+
+            # if no time complexity comment found, ask the human
+            if tc_str is None:
+                warn(
+                    f"No '# Time Complexity: O(...)' found in {name}'s solution.\n"
+                    f"  Please enter it now (just the expression, e.g. [bold]n log n[/])."
+                )
+                tc_str = Prompt.ask(
+                    f"  [{THEME['prompt']}]Time complexity for {name} (expression inside O(...))[/]",
+                    default="",
+                ).strip() or None
+
+            passed, out, err = self._run_solution_against_tests(
+                code, test, entrypoint, label=f"teacher_{i}"
+            )
+            eval_results.append({
+                "name":    name,
+                "code":    code,
+                "passed":  passed,
+                "tc_str":  tc_str,
+                "out":     out,
+                "err":     err,
+            })
+
+        # ── display evaluation table ──────────────────────────────────────────
+        tbl = Table(
+            title="Teacher Solution Evaluation",
+            box=box.ROUNDED, border_style="cyan",
         )
-        best_idx = int(best_idx_raw)
-        self.golden_solution = teacher_solutions[best_idx]
+        tbl.add_column("#",               style="dim",       width=4)
+        tbl.add_column("Teacher",         style="bold cyan", width=26)
+        tbl.add_column("Tests",           style="bold",      width=8)
+        tbl.add_column("Time Complexity", style="yellow",    width=20)
+        tbl.add_column("Output / Error",  style="dim red")
+
+        for i, r in enumerate(eval_results):
+            tc_display = f"O({r['tc_str']})" if r["tc_str"] else "[dim]unknown[/]"
+            status     = "[green]PASS[/]" if r["passed"] else "[red]FAIL[/]"
+            snippet    = escape((r["err"] or r["out"])[:70])
+            tbl.add_row(str(i), r["name"], status, tc_display, snippet)
+
+        console.print(tbl)
+
+        # ── auto-pick best solution ───────────────────────────────────────────
+        # Priority 1: prefer solutions whose tests pass
+        passing_idx = [i for i, r in enumerate(eval_results) if r["passed"]]
+        candidate_idx = passing_idx if passing_idx else list(range(len(eval_results)))
+
+        if not passing_idx:
+            warn("No teacher solution passed the test cases — falling back to time-complexity comparison.")
+
+        # Priority 2: best (lowest) time complexity among candidates
+        tc_vals   = {i: self._tc_numeric(eval_results[i]["tc_str"]) for i in candidate_idx}
+        min_tc    = min(tc_vals.values())
+        best_by_tc = [i for i, v in tc_vals.items() if v == min_tc]
+
+        if len(best_by_tc) == 1:
+            best_idx   = best_by_tc[0]
+            tc_label   = f"O({eval_results[best_idx]['tc_str']})" if eval_results[best_idx]["tc_str"] else "O(?)"
+            pass_label = " + tests pass" if eval_results[best_idx]["passed"] else ""
+            info(
+                f"Auto-selected Teacher {best_idx} "
+                f"({eval_results[best_idx]['name']}) — {tc_label}{pass_label}"
+            )
+        else:
+            # tie on time complexity → ask the human to rate
+            warn(
+                "Multiple solutions are tied"
+                + (" (same time complexity)" if min_tc < float("inf") else " (time complexity unknown)")
+                + ". Please pick the best one."
+            )
+            section("Choose the Golden Solution — Human Rating Required")
+            for i in best_by_tc:
+                r = eval_results[i]
+                preview = (r["code"].strip()[:300] + "…") if len(r["code"]) > 300 else r["code"].strip()
+                tc_label = f"O({r['tc_str']})" if r["tc_str"] else "O(?)"
+                console.print(Panel(
+                    Syntax(preview or "(empty)", "python", theme="monokai", word_wrap=True),
+                    title=(
+                        f"[bold cyan][{i}] {r['name']}[/]  "
+                        f"{'[green]PASS[/]' if r['passed'] else '[red]FAIL[/]'}  "
+                        f"{tc_label}"
+                    ),
+                    border_style="cyan",
+                ))
+
+            choices = [str(i) for i in range(len(eval_results))]
+            best_idx_raw = Prompt.ask(
+                f"  [{THEME['prompt']}]Which teacher's solution is best? Enter index "
+                f"({' / '.join(choices)})[/]",
+                choices=choices,
+                default=str(best_by_tc[0]),
+            )
+            best_idx = int(best_idx_raw)
+
+        self.golden_solution = eval_results[best_idx]["code"]
         info(f"Golden solution → Teacher {best_idx} ({self.cfg.teacher_names[best_idx]})")
 
-        # ── log all teacher submissions + which was selected ──────────────────────
+        # ── log all teacher submissions + which was selected ──────────────────
         if self.logger:
-            for t_name, sol in zip(self.cfg.teacher_names, teacher_solutions):
+            for t_name, raw_sol in zip(self.cfg.teacher_names, teacher_solutions):
                 self.logger.log_golden_solution(
                     self._problem_idx, self._rollout_idx, prompt,
-                    t_name, sol,
+                    t_name, raw_sol,
                     selected=(t_name == self.cfg.teacher_names[best_idx]),
                 )
 
