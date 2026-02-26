@@ -150,7 +150,8 @@ def load_teachers(cfg: TrainConfig, device: torch.device):
             trust_remote_code=True,
             dtype=torch.bfloat16,
             attn_implementation="eager",
-        ).to(device)
+            device_map="auto",
+        )
         hf.eval()
         tokenizers.append(tok)
         hf_models.append(hf)
