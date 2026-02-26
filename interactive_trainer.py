@@ -191,6 +191,28 @@ def _read_float(prompt: str, lo: float = -1.0, hi: float = 1.0) -> float:
             warn(f"Not a valid number: {raw!r}")
 
 
+def _read_teacher_responses(
+    teacher_names: List[str],
+    action_label: str,
+    hint: str = "",
+) -> List[str]:
+    """
+    Ask the user to paste a response from each teacher model in turn.
+    Returns a list of 3 raw strings (one per teacher).
+    """
+    responses: List[str] = []
+    for i, name in enumerate(teacher_names):
+        console.print(Panel(
+            f"[{THEME['header']}]Teacher {i+1} / {len(teacher_names)}  —  {name}[/]\n"
+            + (f"[{THEME['dim']}]{hint}[/]" if hint else ""),
+            border_style="yellow",
+            title=f"[bold yellow]{action_label}[/]",
+        ))
+        resp = _read_multiline(f"Paste the response from [bold]{name}[/]:")
+        responses.append(resp)
+    return responses
+
+
 def _read_tokens(prompt_text: str, n: int) -> List[Tuple[str, float]]:
     """
     Ask for up to *n* tokens with optional log-prob scores.
@@ -267,8 +289,15 @@ class HumanMCTSEnvironment:
     terminal prompt for the human operator to fill in.
     """
 
-    def __init__(self, cfg: InteractiveTrainConfig):
+    def __init__(
+        self,
+        cfg: InteractiveTrainConfig,
+        writer: Optional[SummaryWriter] = None,
+        mcts_step_ctr: Optional[List[int]] = None,
+    ):
         self.cfg = cfg
+        self.writer        = writer
+        self.mcts_step_ctr = mcts_step_ctr if mcts_step_ctr is not None else [0]
         self.current_prompt   = ""
         self.current_test     = ""
         self.current_entrypoint = ""
@@ -293,10 +322,33 @@ class HumanMCTSEnvironment:
         ))
 
         console.print()
-        console.print(f"  [{THEME['dim']}]We need the reference / golden solution for process-reward scoring.[/]")
-        self.golden_solution = _read_multiline(
-            "Paste the BEST / GOLDEN solution for this problem:"
+        console.print(f"  [{THEME['dim']}]Collect the best solution from each teacher, then pick the golden one.[/]")
+
+        teacher_solutions = _read_teacher_responses(
+            self.cfg.teacher_names,
+            action_label="Best Solution",
+            hint="Paste this teacher's best / reference solution for the problem.",
         )
+
+        # display all three side-by-side summaries so the user can compare
+        section("Choose the Golden Solution")
+        for i, (name, sol) in enumerate(zip(self.cfg.teacher_names, teacher_solutions)):
+            preview = (sol.strip()[:200] + "…") if len(sol.strip()) > 200 else sol.strip()
+            console.print(Panel(
+                Syntax(preview or "(empty)", "python", theme="monokai", word_wrap=True),
+                title=f"[bold cyan][{i}] {name}[/]",
+                border_style="cyan",
+            ))
+
+        best_idx_raw = Prompt.ask(
+            f"  [{THEME['prompt']}]Which teacher's solution is best? Enter index (0 / 1 / 2)[/]",
+            choices=["0", "1", "2"],
+            default="0",
+        )
+        best_idx = int(best_idx_raw)
+        self.golden_solution = teacher_solutions[best_idx]
+        info(f"Golden solution → Teacher {best_idx} ({self.cfg.teacher_names[best_idx]})")
+
         if not self.golden_solution.strip():
             warn("No golden solution provided — process rewards will be 0.")
 
@@ -314,28 +366,61 @@ class HumanMCTSEnvironment:
         leaf = self._select_leaf()
         self._show_partial(leaf.generated_text)
 
-        # human provides tokens for expansion
-        tokens = _read_tokens(
-            f"Provide next tokens to EXPAND from this partial (up to {self.cfg.tokens_per_expand}):",
-            self.cfg.tokens_per_expand,
-        )
-        if not tokens:
-            tokens = [(" ", 0.0)]   # fallback: single space
+        # ── per-teacher token expansion ───────────────────────────────────────
+        section("Token Expansion  — provide tokens from each teacher")
+        all_tokens: List[Tuple[str, float]] = []
+        top_tokens_per_teacher: List[Optional[str]] = []
 
-        for (tok_text, lp) in tokens:
+        for t_idx, t_name in enumerate(self.cfg.teacher_names):
+            console.print(Rule(
+                f"[{THEME['header']}]Teacher {t_idx+1}/{len(self.cfg.teacher_names)}  —  {t_name}[/]",
+                style="yellow",
+            ))
+            t_toks = _read_tokens(
+                f"Top-{self.cfg.tokens_per_expand} expansion tokens from [bold]{t_name}[/] "
+                f"(format: token  or  token : -0.45):",
+                self.cfg.tokens_per_expand,
+            )
+            if t_toks:
+                top_tokens_per_teacher.append(t_toks[0][0])
+                all_tokens.extend(t_toks)
+            else:
+                top_tokens_per_teacher.append(None)
+
+        if not all_tokens:
+            all_tokens = [(" ", 0.0)]   # fallback
+
+        # auto-derive agreement: all three teachers' top tokens must match
+        valid_tops = [t for t in top_tokens_per_teacher if t is not None]
+        teachers_agreement = len(valid_tops) == len(self.cfg.teacher_names) and len(set(valid_tops)) == 1
+
+        agree_style = THEME["ok"] if teachers_agreement else THEME["warn"]
+        console.print(
+            f"  [{agree_style}]Teachers agree on top token: {teachers_agreement}[/]  "
+            + (f"(all → {valid_tops[0]!r})" if teachers_agreement and valid_tops else
+               f"(tops: {valid_tops})")
+        )
+
+        for (tok_text, lp) in all_tokens:
             child = Node(None, leaf.generated_text + tok_text, leaf)
             leaf.add_child(child)
 
-        teachers_agreement = Confirm.ask(
-            f"  [{THEME['prompt']}]Do all teachers agree on the top token?[/]",
-            default=False,
-        )
-
-        # human rates the process reward
+        # ── per-teacher process reward (averaged) ─────────────────────────────
         self._show_partial(leaf.generated_text, title="Partial for process reward")
-        reward = _read_float(
-            "Process reward for this partial [-1.0 … 1.0]:",
-            -1.0, 1.0,
+        section("Process Reward  — score from each teacher")
+        pr_scores: List[float] = []
+        for t_idx, t_name in enumerate(self.cfg.teacher_names):
+            score = _read_float(
+                f"[Teacher {t_idx+1}/{len(self.cfg.teacher_names)}: {t_name}]  "
+                f"Score for this partial [-1.0 … 1.0]:",
+                -1.0, 1.0,
+            )
+            pr_scores.append(score)
+
+        reward = max(-1.0, min(1.0, sum(pr_scores) / len(pr_scores)))
+        console.print(
+            f"  [{THEME['ok']}]Average process reward:[/]  [bold]{reward:+.3f}[/]  "
+            f"(from {[f'{s:+.2f}' for s in pr_scores]})"
         )
         self._backpropagate(leaf, reward)
 
@@ -353,6 +438,18 @@ class HumanMCTSEnvironment:
             f"Length:{seq_length}, Agree:{teachers_agreement}, "
             f"Value:{avg_val:.2f}, Nodes:{n_nodes}. Stop? (Yes/No):"
         )
+
+        # ── mcts per-step TensorBoard ─────────────────────────────────────────
+        if self.writer is not None:
+            _s = self.mcts_step_ctr[0]
+            self.writer.add_scalar("mcts/process_reward",  reward,                     _s)
+            self.writer.add_scalar("mcts/teachers_agree",  float(teachers_agreement),  _s)
+            self.writer.add_scalar("mcts/partial_length",  float(seq_length),          _s)
+            self.writer.add_scalar("mcts/tree_nodes",      float(n_nodes),             _s)
+            self.writer.add_scalar("mcts/tokens_provided", float(len(all_tokens)),         _s)
+            self.writer.add_scalar("mcts/node_avg_value",  avg_val,                    _s)
+            self.mcts_step_ctr[0] += 1
+
         return next_state, 0.0, False
 
     # ── terminal evaluation ───────────────────────────────────────────────────
@@ -362,26 +459,34 @@ class HumanMCTSEnvironment:
         num_leaves  = len(all_leaves)
         top_3       = self._top_3_leaves(all_leaves)
 
-        section("Terminal Evaluation  — Complete the partial solutions")
-        completions: List[str] = []
+        section("Terminal Evaluation  — 3 teacher completions per partial")
+        # completions[partial_idx] = [comp_t1, comp_t2, comp_t3]
+        all_completions: List[List[str]] = []
 
         for i, node in enumerate(top_3, 1):
-            self._show_partial(node.generated_text, title=f"Partial #{i}")
-            code = _read_multiline(f"Paste the COMPLETION for partial #{i} (test cases will run):")
-            completions.append(code)
+            self._show_partial(node.generated_text, title=f"Partial #{i} / {len(top_3)}")
+            part_comps = _read_teacher_responses(
+                self.cfg.teacher_names,
+                action_label=f"Complete Partial #{i}",
+                hint="Paste this teacher's full completion of the partial above.",
+            )
+            all_completions.append(part_comps)
 
-        # run test cases
-        test_passed_reward = self._run_tests(completions)
-        lengths = [(len(c),) for c in completions]
+        # flatten to a single list for test running
+        flat_completions: List[str] = [
+            c for part in all_completions for c in part
+        ]
 
-        # drift reward
-        all_lens = [l for (l,) in lengths]
-        if len(all_lens) >= 2:
-            mean_l = sum(all_lens) / len(all_lens)
-            var    = sum((x - mean_l) ** 2 for x in all_lens) / len(all_lens)
-            std    = math.sqrt(var)
-            rng    = max(all_lens) - min(all_lens)
-            max_std = rng / 2.0 if rng > 0 else 1.0
+        # run test cases on all completions
+        test_passed_reward = self._run_tests(flat_completions)
+
+        # drift reward across all 9 lengths (3 teachers × 3 partials)
+        all_lens = [len(c) for c in flat_completions]
+        if len(all_lens) >= 2 and max(all_lens) > min(all_lens):
+            mean_l  = sum(all_lens) / len(all_lens)
+            var     = sum((x - mean_l) ** 2 for x in all_lens) / len(all_lens)
+            std     = math.sqrt(var)
+            max_std = (max(all_lens) - min(all_lens)) / 2.0
             normed  = std / max_std
             cr_drift = max(-1.0, min(1.0, 1.0 - 2.0 * normed ** 2))
         else:
@@ -391,6 +496,19 @@ class HumanMCTSEnvironment:
         final_pr = -1.0 if num_leaves <= 3 else 1.0
 
         self._show_rewards(final_cr, final_pr)
+
+        # ── mcts terminal TensorBoard ─────────────────────────────────────────
+        if self.writer is not None:
+            _s = self.mcts_step_ctr[0]
+            self.writer.add_scalar("mcts/num_leaves",     float(num_leaves),                              _s)
+            self.writer.add_scalar("mcts/tree_depth",     float(self.step_count),                         _s)
+            self.writer.add_scalar("mcts/drift_reward",   cr_drift,                                       _s)
+            self.writer.add_scalar("mcts/test_passed",    1.0 if test_passed_reward == 1.0 else 0.0,      _s)
+            self.writer.add_scalar("mcts/final_cr",       final_cr,                                       _s)
+            self.writer.add_scalar("mcts/final_pr",       final_pr,                                       _s)
+            self.writer.add_scalar("mcts/final_total_r",  final_cr + final_pr,                            _s)
+            self.mcts_step_ctr[0] += 1
+
         return final_cr, final_pr
 
     # ── test runner ───────────────────────────────────────────────────────────
@@ -812,7 +930,9 @@ def train(cfg: InteractiveTrainConfig = InteractiveTrainConfig()) -> None:
     global_step  = 0
     accum_count  = 0
     run_loss = run_reward = run_cr = run_pr = 0.0
+    run_pg = run_kl = run_ent = run_ratio = run_adv = 0.0
     window_n = 0
+    mcts_step_ctr = [0]   # shared across all envs in a run; monotonically increasing
 
     for prob_idx in range(len(problems)):
         # ── problem selection mode ────────────────────────────────────────────
@@ -839,7 +959,7 @@ def train(cfg: InteractiveTrainConfig = InteractiveTrainConfig()) -> None:
         section(f"Problem {prob_idx+1}  ·  {cfg.group_size} rollouts")
 
         for g in range(cfg.group_size):
-            env = HumanMCTSEnvironment(cfg)
+            env = HumanMCTSEnvironment(cfg, writer=writer, mcts_step_ctr=mcts_step_ctr)
             states, actions, cr, pr = run_rollout(
                 student, student_tok, env,
                 prompt, test_str, entrypoint,
@@ -848,8 +968,13 @@ def train(cfg: InteractiveTrainConfig = InteractiveTrainConfig()) -> None:
             group_trajectories.append((states, actions))
             group_cr.append(cr)
             group_pr.append(pr)
-            writer.add_scalar("rollout/cr", cr, prob_idx * cfg.group_size + g)
-            writer.add_scalar("rollout/pr", pr, prob_idx * cfg.group_size + g)
+            _rg = prob_idx * cfg.group_size + g
+            _n_yes = sum(1 for a in actions if "yes" in a.lower())
+            writer.add_scalar("rollout/cr",      cr,            _rg)
+            writer.add_scalar("rollout/pr",      pr,            _rg)
+            writer.add_scalar("rollout/total_r", cr + pr,       _rg)
+            writer.add_scalar("rollout/steps",   len(actions),  _rg)
+            writer.add_scalar("rollout/n_yes",   _n_yes,        _rg)
 
         if all(len(t[0]) == 0 for t in group_trajectories):
             warn("All rollouts empty — skipping.")
@@ -877,15 +1002,26 @@ def train(cfg: InteractiveTrainConfig = InteractiveTrainConfig()) -> None:
         run_reward += mean_cr + mean_pr
         run_cr     += mean_cr
         run_pr     += mean_pr
+        run_pg     += metrics["pg_loss"]
+        run_kl     += metrics["kl_loss"]
+        run_ent    += metrics["ent_bonus"]
+        run_ratio  += metrics["ratio_mean"]
+        run_adv    += metrics["adv_mean"]
         window_n   += 1
         accum_count += 1
 
-        # per-problem TensorBoard
-        writer.add_scalar("problem/loss",   loss.item(), prob_idx)
-        writer.add_scalar("problem/pg_loss",metrics["pg_loss"], prob_idx)
-        writer.add_scalar("problem/kl_loss",metrics["kl_loss"], prob_idx)
-        writer.add_scalar("problem/mean_cr",mean_cr, prob_idx)
-        writer.add_scalar("problem/mean_pr",mean_pr, prob_idx)
+        # per-problem TensorBoard (full parity with level_guesser_trainer)
+        writer.add_scalar("problem/loss",       loss.item(),            prob_idx)
+        writer.add_scalar("problem/mean_r",     mean_cr + mean_pr,      prob_idx)
+        writer.add_scalar("problem/mean_cr",    mean_cr,                prob_idx)
+        writer.add_scalar("problem/mean_pr",    mean_pr,                prob_idx)
+        writer.add_scalar("problem/pg_loss",    metrics["pg_loss"],     prob_idx)
+        writer.add_scalar("problem/kl_loss",    metrics["kl_loss"],     prob_idx)
+        writer.add_scalar("problem/ent_bonus",  metrics["ent_bonus"],   prob_idx)
+        writer.add_scalar("problem/ratio_mean", metrics["ratio_mean"],  prob_idx)
+        writer.add_scalar("problem/adv_mean",   metrics["adv_mean"],    prob_idx)
+        writer.add_scalar("problem/adv_std",    metrics["adv_std"],     prob_idx)
+        writer.add_scalar("problem/n_steps",    metrics["n_steps"],     prob_idx)
 
         # ── metrics table ─────────────────────────────────────────────────────
         mt = Table(box=box.SIMPLE_HEAVY, border_style="magenta")
@@ -930,11 +1066,19 @@ def train(cfg: InteractiveTrainConfig = InteractiveTrainConfig()) -> None:
                                 title=f"[bold green]=== Step {global_step} ===[/]",
                                 border_style="green"))
 
-            writer.add_scalar("train/loss",   avg_loss,   global_step)
-            writer.add_scalar("train/reward", avg_reward, global_step)
-            writer.add_scalar("train/lr",     cur_lr,     global_step)
+            writer.add_scalar("train/loss",       avg_loss,              global_step)
+            writer.add_scalar("train/reward",     avg_reward,            global_step)
+            writer.add_scalar("train/cr",         run_cr    / window_n,  global_step)
+            writer.add_scalar("train/pr",         run_pr    / window_n,  global_step)
+            writer.add_scalar("train/pg_loss",    run_pg    / window_n,  global_step)
+            writer.add_scalar("train/kl_loss",    run_kl    / window_n,  global_step)
+            writer.add_scalar("train/ent_bonus",  run_ent   / window_n,  global_step)
+            writer.add_scalar("train/ratio_mean", run_ratio / window_n,  global_step)
+            writer.add_scalar("train/adv_mean",   run_adv   / window_n,  global_step)
+            writer.add_scalar("train/lr",         cur_lr,                global_step)
 
             run_loss = run_reward = run_cr = run_pr = 0.0
+            run_pg = run_kl = run_ent = run_ratio = run_adv = 0.0
             window_n = 0
 
         # ── checkpoint ────────────────────────────────────────────────────────
@@ -979,7 +1123,7 @@ if __name__ == "__main__":
     )
     ap.add_argument("--model",       default="Qwen/Qwen3-4B",  help="Student model ID")
     ap.add_argument("--group-size",  type=int, default=2,      help="Rollouts per problem")
-    ap.add_argument("--max-problems",type=int, default=20,     help="Max problems to train on")
+    ap.add_argument("--max-problems",type=int, default=80,     help="Max problems to train on")
     ap.add_argument("--max-steps",   type=int, default=8,      help="Max MCTS steps per rollout")
     ap.add_argument("--tokens-per-expand", type=int, default=5,help="Tokens per expansion prompt")
     ap.add_argument("--save-every",  type=int, default=5,      help="Checkpoint interval")
