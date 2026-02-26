@@ -21,6 +21,7 @@ Run:
 from __future__ import annotations
 
 import html
+import json
 import math
 import os
 import random
@@ -31,6 +32,7 @@ import textwrap
 import time
 import threading
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import List, Optional, Tuple
 
 import torch
@@ -105,6 +107,9 @@ class InteractiveTrainConfig:
         "Qwen2.5-Coder-14B",
         "Codestral-22B",
     ])
+
+    # ── human-input logging ───────────────────────────────────────────────────
+    log_inputs_path: str = "human_inputs.jsonl"  # set to "" to disable
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -255,6 +260,101 @@ def _read_tokens(prompt_text: str, n: int) -> List[Tuple[str, float]]:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# Human-input JSONL logger
+# ──────────────────────────────────────────────────────────────────────────────
+
+class HumanInputLogger:
+    """
+    Appends every human oracle interaction to a JSONL file.
+    Enables replay, debugging, and future fine-tuning on human preferences.
+
+    Each line in the file is a self-contained JSON record with a timestamp
+    and an ``event`` field describing the interaction type.
+    """
+
+    def __init__(self, log_path: str = "human_inputs.jsonl") -> None:
+        self.log_path = log_path
+        if log_path:
+            os.makedirs(os.path.dirname(log_path) if os.path.dirname(log_path) else ".",
+                        exist_ok=True)
+
+    def _write(self, record: dict) -> None:
+        if not self.log_path:
+            return
+        record["timestamp"] = datetime.utcnow().isoformat()
+        with open(self.log_path, "a") as fh:
+            fh.write(json.dumps(record) + "\n")
+
+    def log_golden_solution(
+        self, problem_idx: int, rollout_idx: int, prompt: str,
+        teacher_name: str, solution: str, selected: bool,
+    ) -> None:
+        self._write({
+            "event": "golden_solution",
+            "problem_idx": problem_idx,
+            "rollout_idx": rollout_idx,
+            "prompt_preview": prompt[:300],
+            "teacher": teacher_name,
+            "solution": solution,
+            "selected": selected,
+        })
+
+    def log_token_expansion(
+        self, problem_idx: int, rollout_idx: int, step: int,
+        teacher_name: str, tokens: List[Tuple[str, float]],
+    ) -> None:
+        self._write({
+            "event": "token_expansion",
+            "problem_idx": problem_idx,
+            "rollout_idx": rollout_idx,
+            "step": step,
+            "teacher": teacher_name,
+            "tokens": [[t, lp] for t, lp in tokens],
+        })
+
+    def log_process_reward(
+        self, problem_idx: int, rollout_idx: int, step: int,
+        teacher_name: str, score: float,
+    ) -> None:
+        self._write({
+            "event": "process_reward",
+            "problem_idx": problem_idx,
+            "rollout_idx": rollout_idx,
+            "step": step,
+            "teacher": teacher_name,
+            "score": score,
+        })
+
+    def log_teacher_completion(
+        self, problem_idx: int, rollout_idx: int, partial_idx: int,
+        teacher_name: str, completion: str,
+    ) -> None:
+        self._write({
+            "event": "teacher_completion",
+            "problem_idx": problem_idx,
+            "rollout_idx": rollout_idx,
+            "partial_idx": partial_idx,
+            "teacher": teacher_name,
+            "completion": completion,
+        })
+
+    def log_student_action(
+        self, problem_idx: int, rollout_idx: int, step: int,
+        state: str, action: str, logprob: float, is_yes: bool,
+    ) -> None:
+        self._write({
+            "event": "student_action",
+            "problem_idx": problem_idx,
+            "rollout_idx": rollout_idx,
+            "step": step,
+            "state": state,
+            "action": action,
+            "logprob": logprob,
+            "is_yes": is_yes,
+        })
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # MCTS nodes
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -294,24 +394,39 @@ class HumanMCTSEnvironment:
         cfg: InteractiveTrainConfig,
         writer: Optional[SummaryWriter] = None,
         mcts_step_ctr: Optional[List[int]] = None,
+        logger: Optional["HumanInputLogger"] = None,
     ):
         self.cfg = cfg
         self.writer        = writer
         self.mcts_step_ctr = mcts_step_ctr if mcts_step_ctr is not None else [0]
-        self.current_prompt   = ""
-        self.current_test     = ""
+        self.logger        = logger
+        self.current_prompt     = ""
+        self.current_test       = ""
         self.current_entrypoint = ""
         self.root_node: Optional[Node] = None
-        self.golden_solution  = ""
-        self.step_count       = 0
+        self.golden_solution    = ""
+        self.step_count         = 0
+        self.last_leaf_text     = ""   # updated each expansion step; used by rollout
+        self._problem_idx       = 0    # set by reset()
+        self._rollout_idx       = 0    # set by reset()
 
     # ── public API ────────────────────────────────────────────────────────────
 
-    def reset(self, prompt: str, test: str, entrypoint: str) -> str:
+    def reset(
+        self,
+        prompt: str,
+        test: str,
+        entrypoint: str,
+        problem_idx: int = 0,
+        rollout_idx: int = 0,
+    ) -> str:
         self.current_prompt     = prompt
         self.current_test       = test
         self.current_entrypoint = entrypoint
         self.step_count         = 0
+        self.last_leaf_text     = ""
+        self._problem_idx       = problem_idx
+        self._rollout_idx       = rollout_idx
         self.root_node          = Node(None, "", None)
 
         section("Golden / Best Solution")
@@ -349,6 +464,15 @@ class HumanMCTSEnvironment:
         self.golden_solution = teacher_solutions[best_idx]
         info(f"Golden solution → Teacher {best_idx} ({self.cfg.teacher_names[best_idx]})")
 
+        # ── log all teacher submissions + which was selected ──────────────────────
+        if self.logger:
+            for t_name, sol in zip(self.cfg.teacher_names, teacher_solutions):
+                self.logger.log_golden_solution(
+                    self._problem_idx, self._rollout_idx, prompt,
+                    t_name, sol,
+                    selected=(t_name == self.cfg.teacher_names[best_idx]),
+                )
+
         if not self.golden_solution.strip():
             warn("No golden solution provided — process rewards will be 0.")
 
@@ -364,6 +488,7 @@ class HumanMCTSEnvironment:
 
         # select & display leaf
         leaf = self._select_leaf()
+        self.last_leaf_text = leaf.generated_text   # expose for rollout
         self._show_partial(leaf.generated_text)
 
         # ── per-teacher token expansion ───────────────────────────────────────
@@ -386,6 +511,12 @@ class HumanMCTSEnvironment:
                 all_tokens.extend(t_toks)
             else:
                 top_tokens_per_teacher.append(None)
+            # ── log token expansion per teacher ──────────────────────────────
+            if self.logger:
+                self.logger.log_token_expansion(
+                    self._problem_idx, self._rollout_idx,
+                    self.step_count, t_name, t_toks,
+                )
 
         if not all_tokens:
             all_tokens = [(" ", 0.0)]   # fallback
@@ -416,6 +547,12 @@ class HumanMCTSEnvironment:
                 -1.0, 1.0,
             )
             pr_scores.append(score)
+            # ── log process reward per teacher ──────────────────────────────
+            if self.logger:
+                self.logger.log_process_reward(
+                    self._problem_idx, self._rollout_idx,
+                    self.step_count, t_name, score,
+                )
 
         reward = max(-1.0, min(1.0, sum(pr_scores) / len(pr_scores)))
         console.print(
@@ -471,6 +608,12 @@ class HumanMCTSEnvironment:
                 hint="Paste this teacher's full completion of the partial above.",
             )
             all_completions.append(part_comps)
+            # ── log teacher completions ───────────────────────────────────
+            if self.logger:
+                for t_name, comp in zip(self.cfg.teacher_names, part_comps):
+                    self.logger.log_teacher_completion(
+                        self._problem_idx, self._rollout_idx, i - 1, t_name, comp,
+                    )
 
         # flatten to a single list for test running
         flat_completions: List[str] = [
@@ -809,41 +952,167 @@ def run_rollout(
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# GRPO loss  (same maths as level_guesser_trainer.py)
+# Rollout result container
+# ──────────────────────────────────────────────────────────────────────────────
+
+@dataclass
+class RolloutResult:
+    """All data produced by a single rollout, used by the GDPO loss."""
+    states:               List[str]
+    actions:              List[str]
+    step_logprobs:        List[float]   # mean per-token log-prob of each action
+    cr:                   float         # completion reward
+    pr:                   float         # prune reward
+    yes_step:             int           # step index where student said "yes" (or max_steps+1)
+    yes_decisions:        List[bool]    # per-step yes/no decision
+    partial_text_at_yes:  str           # MCTS leaf text when stop was triggered
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# GDPO reward components
+# ──────────────────────────────────────────────────────────────────────────────
+
+def get_stop_timing_reward(yes_steps_list: List[int], max_steps: int) -> List[float]:
+    """
+    Rewards balanced stopping timing across the group of rollouts.
+
+    Intuition:
+    - Too early "yes"  → risk of incomplete / wrong code   → penalty
+    - Very late  "yes" → inefficient, shallow exploration  → penalty
+    - Stopping around ~40-70 % of max_steps → often best
+
+    Formula (per rollout):
+        normalized_position = yes_step / max_steps
+        r = exp( -(normalized_position - 0.55)^2 / (2*0.15^2) ) * 2 - 1
+        → peaks at +1 near 55 % depth; falls to ~ -1 at extremes
+    """
+    rewards: List[float] = []
+    for step in yes_steps_list:
+        norm_pos = min(step / max(max_steps, 1), 1.0)  # clamp to [0, 1]
+        deviation = (norm_pos - 0.55) ** 2
+        r = math.exp(-deviation / (2 * 0.15 ** 2))
+        scaled = (r * 2) - 1          # → [-1, +1]
+        rewards.append(max(-1.0, min(1.0, scaled)))
+    return rewards
+
+
+def get_premature_stop_penalty(
+    yes_decisions: List[bool],
+    partial_texts_at_yes: List[str],
+) -> List[float]:
+    """
+    -1 if stopped but code looks incomplete, up to +0.5 if looks functional.
+
+    Checks: has ``def ``, has ``return`` / ``print(``, length > threshold.
+    Returns 0.0 if the rollout did not stop voluntarily (continued to max steps).
+    """
+    rewards: List[float] = []
+    for decided_yes, text in zip(yes_decisions, partial_texts_at_yes):
+        if not decided_yes:
+            rewards.append(0.0)          # no penalty for forced max-step stop
+            continue
+        has_def     = "def " in text
+        has_return  = "return " in text or "print(" in text
+        long_enough = len(text.strip()) > 80
+        score = 0.0
+        if has_def:     score += 0.4
+        if has_return:  score += 0.4
+        if long_enough: score += 0.2
+        r = score - 0.6                  # range: -0.6 → +0.4
+        rewards.append(max(-1.0, min(0.5, r)))
+    return rewards
+
+
+def get_confidence_calibration(
+    yes_logprobs: List[float],
+    decided_yes: List[bool],
+) -> List[float]:
+    """
+    Per-step reward based on how confident the student was in its decision.
+
+    For "yes" actions: reward high log-prob, penalise very low log-prob.
+        r = 2 * logprob - 1   (logprob ≈ 0 → +1 at best; very negative → -1)
+    For "no" actions: small bonus for a confident continue.
+        r = logprob * 0.5
+    """
+    rewards: List[float] = []
+    for lp, is_yes in zip(yes_logprobs, decided_yes):
+        if is_yes:
+            r = 2.0 * lp - 1.0
+        else:
+            r = lp * 0.5
+        rewards.append(max(-1.0, min(1.0, r)))
+    return rewards
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# GDPO loss  (GRPO with separate per-component advantage normalisation)
 # ──────────────────────────────────────────────────────────────────────────────
 
 def compute_grpo_loss(
-    student:   AutoModelForCausalLM,
-    ref_model: AutoModelForCausalLM,
-    tok:       AutoTokenizer,
-    group_trajectories: List[Tuple[List[str], List[str]]],
-    group_cr:  List[float],
-    group_pr:  List[float],
-    cfg:       InteractiveTrainConfig,
-    device:    torch.device,
+    student:        AutoModelForCausalLM,
+    ref_model:      AutoModelForCausalLM,
+    tok:            AutoTokenizer,
+    rollout_results: List[RolloutResult],
+    cfg:            InteractiveTrainConfig,
+    device:         torch.device,
 ) -> Tuple[torch.Tensor, dict]:
+    """
+    GDPO loss: five reward components are each independently normalised
+    across the group, then *summed* to form the per-trajectory advantage.
 
-    cr = torch.tensor(group_cr, dtype=torch.float32)
-    pr = torch.tensor(group_pr, dtype=torch.float32)
+    Components
+    ----------
+    1. cr          – completion reward (drift tightness × test-pass gate)
+    2. pr          – prune reward (+1 ≥ 4 leaves explored, else -1)
+    3. stop_timing – Gaussian reward for stopping at ~55 % of max_steps
+    4. prem_stop   – penalty for stopping when code is still incomplete
+    5. confidence  – per-step logprob calibration, averaged to rollout level
+    """
 
-    def norm_adv(t: torch.Tensor) -> List[float]:
+    def norm_adv(vals: List[float]) -> List[float]:
+        t = torch.tensor(vals, dtype=torch.float32)
         m, s = t.mean(), t.std(unbiased=False).clamp(min=1e-8)
         return ((t - m) / s).tolist()
 
-    advantages = [a + b for a, b in zip(norm_adv(cr), norm_adv(pr))]
+    group_cr   = [r.cr for r in rollout_results]
+    group_pr   = [r.pr for r in rollout_results]
+    yes_steps  = [r.yes_step for r in rollout_results]
+    yes_decs   = [any(r.yes_decisions) for r in rollout_results]   # bool: voluntarily stopped?
+    par_texts  = [r.partial_text_at_yes for r in rollout_results]
+
+    # per-rollout confidence: mean of per-step calibration rewards
+    conf_per_rollout: List[float] = []
+    for rr in rollout_results:
+        step_confs = get_confidence_calibration(rr.step_logprobs, rr.yes_decisions)
+        conf_per_rollout.append(
+            sum(step_confs) / max(len(step_confs), 1)
+        )
+
+    # ── GDPO: independent normalisation of each reward component ────────────
+    adv_cr   = norm_adv(group_cr)
+    adv_pr   = norm_adv(group_pr)
+    adv_stop = norm_adv(get_stop_timing_reward(yes_steps, cfg.max_steps))
+    adv_prem = norm_adv(get_premature_stop_penalty(yes_decs, par_texts))
+    adv_conf = norm_adv(conf_per_rollout)
+
+    advantages = [
+        a + b + c + d + e
+        for a, b, c, d, e in zip(adv_cr, adv_pr, adv_stop, adv_prem, adv_conf)
+    ]
 
     total_loss  = torch.zeros(1, device=device)
     n_steps     = 0
     sum_pg = sum_kl = sum_ent = sum_ratio = 0.0
     adv_vals: List[float] = []
 
-    for traj_idx, (states, actions) in enumerate(group_trajectories):
-        if not states:
+    for traj_idx, rr in enumerate(rollout_results):
+        if not rr.states:
             continue
         adv = float(advantages[traj_idx])
         adv_vals.append(adv)
 
-        for state_str, action_str in zip(states, actions):
+        for state_str, action_str in zip(rr.states, rr.actions):
             full_text  = state_str + " " + action_str
             enc        = tok(full_text,  return_tensors="pt", truncation=True, max_length=512).to(device)
             state_enc  = tok(state_str,  return_tensors="pt", truncation=True, max_length=512).to(device)
@@ -881,14 +1150,20 @@ def compute_grpo_loss(
         total_loss = total_loss / n_steps
 
     metrics = {
-        "pg_loss":   sum_pg    / max(n_steps, 1),
-        "kl_loss":   sum_kl    / max(n_steps, 1),
-        "ent_bonus": sum_ent   / max(n_steps, 1),
-        "ratio_mean":sum_ratio / max(n_steps, 1),
-        "adv_mean":  sum(adv_vals) / max(len(adv_vals), 1),
-        "adv_std":   float(torch.tensor(adv_vals).std(unbiased=False))
-                     if len(adv_vals) > 1 else 0.0,
-        "n_steps":   n_steps,
+        "pg_loss":    sum_pg    / max(n_steps, 1),
+        "kl_loss":    sum_kl    / max(n_steps, 1),
+        "ent_bonus":  sum_ent   / max(n_steps, 1),
+        "ratio_mean": sum_ratio / max(n_steps, 1),
+        "adv_mean":   sum(adv_vals) / max(len(adv_vals), 1),
+        "adv_std":    float(torch.tensor(adv_vals).std(unbiased=False))
+                      if len(adv_vals) > 1 else 0.0,
+        "n_steps":    n_steps,
+        # per-component GDPO advantage means (for TensorBoard)
+        "adv_cr":     sum(adv_cr)   / max(len(adv_cr),   1),
+        "adv_pr":     sum(adv_pr)   / max(len(adv_pr),   1),
+        "adv_stop":   sum(adv_stop) / max(len(adv_stop), 1),
+        "adv_prem":   sum(adv_prem) / max(len(adv_prem), 1),
+        "adv_conf":   sum(adv_conf) / max(len(adv_conf), 1),
     }
     return total_loss.squeeze(), metrics
 
@@ -905,6 +1180,11 @@ def train(cfg: InteractiveTrainConfig = InteractiveTrainConfig()) -> None:
 
     writer = SummaryWriter(log_dir=cfg.log_dir)
     info(f"TensorBoard → {cfg.log_dir}")
+
+    # ── human-input JSONL logger ───────────────────────────────────────────
+    logger = HumanInputLogger(cfg.log_inputs_path) if cfg.log_inputs_path else None
+    if logger:
+        info(f"Human inputs → {cfg.log_inputs_path}")
 
     student, ref_model, student_tok = load_student(cfg, device)
 
@@ -931,6 +1211,7 @@ def train(cfg: InteractiveTrainConfig = InteractiveTrainConfig()) -> None:
     accum_count  = 0
     run_loss = run_reward = run_cr = run_pr = 0.0
     run_pg = run_kl = run_ent = run_ratio = run_adv = 0.0
+    run_stop = run_prem = run_conf = 0.0
     window_n = 0
     mcts_step_ctr = [0]   # shared across all envs in a run; monotonically increasing
 
@@ -1007,6 +1288,9 @@ def train(cfg: InteractiveTrainConfig = InteractiveTrainConfig()) -> None:
         run_ent    += metrics["ent_bonus"]
         run_ratio  += metrics["ratio_mean"]
         run_adv    += metrics["adv_mean"]
+        run_stop   += metrics["adv_stop"]
+        run_prem   += metrics["adv_prem"]
+        run_conf   += metrics["adv_conf"]
         window_n   += 1
         accum_count += 1
 
@@ -1022,6 +1306,11 @@ def train(cfg: InteractiveTrainConfig = InteractiveTrainConfig()) -> None:
         writer.add_scalar("problem/adv_mean",   metrics["adv_mean"],    prob_idx)
         writer.add_scalar("problem/adv_std",    metrics["adv_std"],     prob_idx)
         writer.add_scalar("problem/n_steps",    metrics["n_steps"],     prob_idx)
+        writer.add_scalar("problem/adv_cr",     metrics["adv_cr"],      prob_idx)
+        writer.add_scalar("problem/adv_pr",     metrics["adv_pr"],      prob_idx)
+        writer.add_scalar("problem/adv_stop",   metrics["adv_stop"],    prob_idx)
+        writer.add_scalar("problem/adv_prem",   metrics["adv_prem"],    prob_idx)
+        writer.add_scalar("problem/adv_conf",   metrics["adv_conf"],    prob_idx)
 
         # ── metrics table ─────────────────────────────────────────────────────
         mt = Table(box=box.SIMPLE_HEAVY, border_style="magenta")
@@ -1035,6 +1324,9 @@ def train(cfg: InteractiveTrainConfig = InteractiveTrainConfig()) -> None:
         mt.add_row("Adv mean",   f"{metrics['adv_mean']:+.4f}")
         mt.add_row("mean cr",    f"{mean_cr:+.3f}")
         mt.add_row("mean pr",    f"{mean_pr:+.3f}")
+        mt.add_row("adv_stop",   f"{metrics['adv_stop']:+.4f}")
+        mt.add_row("adv_prem",   f"{metrics['adv_prem']:+.4f}")
+        mt.add_row("adv_conf",   f"{metrics['adv_conf']:+.4f}")
         console.print(Panel(mt, title="[bold magenta]Problem Metrics[/]", border_style="magenta"))
 
         # ── optimizer step ─────────────────────────────────────────────────────
@@ -1061,6 +1353,9 @@ def train(cfg: InteractiveTrainConfig = InteractiveTrainConfig()) -> None:
             step_t.add_row("Avg reward", f"{avg_reward:+.4f}")
             step_t.add_row("Avg cr",     f"{run_cr/window_n:+.4f}")
             step_t.add_row("Avg pr",     f"{run_pr/window_n:+.4f}")
+            step_t.add_row("Avg stop",   f"{run_stop/window_n:+.4f}")
+            step_t.add_row("Avg prem",   f"{run_prem/window_n:+.4f}")
+            step_t.add_row("Avg conf",   f"{run_conf/window_n:+.4f}")
             step_t.add_row("LR",         f"{cur_lr:.2e}")
             console.print(Panel(step_t,
                                 title=f"[bold green]=== Step {global_step} ===[/]",
@@ -1075,10 +1370,14 @@ def train(cfg: InteractiveTrainConfig = InteractiveTrainConfig()) -> None:
             writer.add_scalar("train/ent_bonus",  run_ent   / window_n,  global_step)
             writer.add_scalar("train/ratio_mean", run_ratio / window_n,  global_step)
             writer.add_scalar("train/adv_mean",   run_adv   / window_n,  global_step)
+            writer.add_scalar("train/adv_stop",   run_stop  / window_n,  global_step)
+            writer.add_scalar("train/adv_prem",   run_prem  / window_n,  global_step)
+            writer.add_scalar("train/adv_conf",   run_conf  / window_n,  global_step)
             writer.add_scalar("train/lr",         cur_lr,                global_step)
 
             run_loss = run_reward = run_cr = run_pr = 0.0
             run_pg = run_kl = run_ent = run_ratio = run_adv = 0.0
+            run_stop = run_prem = run_conf = 0.0
             window_n = 0
 
         # ── checkpoint ────────────────────────────────────────────────────────
@@ -1127,8 +1426,8 @@ if __name__ == "__main__":
     ap.add_argument("--max-steps",   type=int, default=8,      help="Max MCTS steps per rollout")
     ap.add_argument("--tokens-per-expand", type=int, default=5,help="Tokens per expansion prompt")
     ap.add_argument("--save-every",  type=int, default=5,      help="Checkpoint interval")
-    ap.add_argument("--log-dir",     default="runs/alphaD_rl_interactive")
-    ap.add_argument("--save-dir",    default="checkpoints_interactive")
+    ap.add_argument("--log-dir",     default="runs/alphaD_rl")
+    ap.add_argument("--save-dir",    default="checkpoints")
     args = ap.parse_args()
 
     cfg = InteractiveTrainConfig(
