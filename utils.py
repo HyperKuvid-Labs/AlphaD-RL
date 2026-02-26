@@ -1,11 +1,11 @@
 import requests
 
-# ── Teacher backend registry ─────────────────────────────────────────────────
-# Maps each teacher model ID → SGLang server base URL.
-# Long-form generations (best solutions, continuations, process-reward scoring)
-# are routed to these hosted SGLang endpoints via HTTP.
-# Token-level logprob queries (expand_leaf / get_next_token_logprobs_hf) still
-# run on the locally-loaded HF models — they need access to the raw logits.
+# ── teacher backend registry ─────────────────────────────────────────────────
+# maps each teacher model id → vllm server base url.
+# long-form generations (best solutions, continuations, process-reward scoring)
+# are routed to these hosted vllm endpoints via http.
+# token-level logprob queries (expand_leaf / get_next_token_logprobs_hf) still
+# run on the locally-loaded hf models — they need access to the raw logits.
 TEACHER_ENDPOINTS: dict = {
     "openai/gpt-oss-20b":                          "http://100.92.198.45:8000",
     "Qwen/Qwen2.5-Coder-14B-Instruct":             "http://100.125.110.76:8000",
@@ -15,21 +15,21 @@ TEACHER_ENDPOINTS: dict = {
 # Ordered list: index 0 = tm1 (GPT), 1 = tm2 (Qwen), 2 = tm3 (DeepSeek)
 TEACHER_MODEL_IDS: list = list(TEACHER_ENDPOINTS.keys())
 
-def _sglang_generate(model_id: str, prompts: list, params: dict) -> list:
+def _vllm_generate(model_id: str, prompts: list, params: dict) -> list:
     """
-    Send long-form generation requests to a hosted SGLang/FastAPI server.
+    sends long-form generation requests to a hosted vllm server.
 
-    Calls POST <base_url>/resp for each prompt and returns a list of dicts
+    calls POST <base_url>/v1/completions for each prompt and returns a list of dicts
     with key 'text', matching the interface of _hf_generate so call-sites are
     interchangeable.
 
-    Use this for:
+    use this for:
       - generate_best_solution   (up to 1024 tokens per teacher)
       - continuation completions in _terminate_and_evaluate
       - get_process_reward scoring
 
-    Do NOT use this for get_next_token_logprobs_hf / expand_leaf — those need
-    raw logit tensors and must stay on the local HF model.
+    do NOT use this for get_next_token_logprobs_hf / expand_leaf — those need
+    raw logit tensors and must stay on the local hf model.
     """
     base_url = TEACHER_ENDPOINTS[model_id]
     results = []
@@ -40,20 +40,20 @@ def _sglang_generate(model_id: str, prompts: list, params: dict) -> list:
             "temperature": params.get("temperature", 0.7),
         }
         try:
-            resp = requests.post(f"{base_url}/resp", json=payload, timeout=120)
+            resp = requests.post(f"{base_url}/v1/completions", json=payload, timeout=120)
             resp.raise_for_status()
-            results.append({"text": resp.json()["response"]})
+            results.append({"text": resp.json().get("choices", [{}])[0].get("text", "")})
         except Exception as e:
-            print(f"[WARNING] _sglang_generate({model_id}) failed: {e}")
+            print(f"[WARNING] _vllm_generate({model_id}) failed: {e}")
             results.append({"text": ""})
     return results
 
 
 def _hf_generate(model, tokenizer, prompts, params):
     """
-    Run HF model.generate() for a list of prompts.
-    Returns a list of dicts with key 'text' (newly generated tokens only),
-    matching the interface previously expected from sglang engines.
+    runs hf model.generate() for a list of prompts.
+    returns a list of dicts with key 'text' (newly generated tokens only),
+    matching the interface of _vllm_generate so call-sites are interchangeable.
     """
     import torch
     device = next(model.parameters()).device
@@ -173,10 +173,10 @@ def generate_best_solution(prompt: str, tm1, tm2, tm3, tok1, tok2, tok3, params1
       "4. Output the Python code and NOTHING ELSE — not a single word outside the code."
   )
   gen_params = {"temperature": 0.5, "top_p": 1.0, "max_new_tokens": 1024}
-  # Long generation → SGLang hosted backends
-  output1 = _sglang_generate(TEACHER_MODEL_IDS[0], [prompt], gen_params)
-  output2 = _sglang_generate(TEACHER_MODEL_IDS[1], [prompt], gen_params)
-  output3 = _sglang_generate(TEACHER_MODEL_IDS[2], [prompt], gen_params)
+  # long generation → vllm hosted backends
+  output1 = _vllm_generate(TEACHER_MODEL_IDS[0], [prompt], gen_params)
+  output2 = _vllm_generate(TEACHER_MODEL_IDS[1], [prompt], gen_params)
+  output3 = _vllm_generate(TEACHER_MODEL_IDS[2], [prompt], gen_params)
 
   best_output_index=get_best_solution(output1[0]['text'],output2[0]['text'],output3[0]['text'])
   best_output = [output1[0]['text'], output2[0]['text'], output3[0]['text']][best_output_index]
@@ -288,10 +288,10 @@ def get_process_reward(prompt : str, best_solution :str , partial_solution :str,
   You only ouput the float score without any additional text or explanation.Not even any labels or indentation. Just the number."""
 
   score_params = {"temperature": 0.1, "top_p": 1.0, "max_new_tokens": 10}
-  # Short scoring generation → SGLang hosted backends
-  output1 = _sglang_generate(TEACHER_MODEL_IDS[0], [final_prompt], score_params)
-  output2 = _sglang_generate(TEACHER_MODEL_IDS[1], [final_prompt], score_params)
-  output3 = _sglang_generate(TEACHER_MODEL_IDS[2], [final_prompt], score_params)
+  # short scoring generation → vllm hosted backends
+  output1 = _vllm_generate(TEACHER_MODEL_IDS[0], [final_prompt], score_params)
+  output2 = _vllm_generate(TEACHER_MODEL_IDS[1], [final_prompt], score_params)
+  output3 = _vllm_generate(TEACHER_MODEL_IDS[2], [final_prompt], score_params)
 
   raw_text1 = output1[0]['text']
   raw_text2 = output2[0]['text']

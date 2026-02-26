@@ -67,10 +67,10 @@ log = logging.getLogger(__name__)
 #       "deepseek-ai/DeepSeek-Coder-V2-Lite-Instruct": "http://PLACEHOLDER_IP_3:8000",
 #   }
 #
-# • Long-form generation  (best solutions, continuation completions, scoring)
-#   → _sglang_generate()   — HTTP POST to the hosted SGLang/FastAPI server
-# • Token-level logprobs   (expand_leaf / get_next_token_logprobs_hf)
-#   → _hf_generate()       — local HF model (logits needed directly)
+# • long-form generation  (best solutions, continuation completions, scoring)
+#   → _vllm_generate()   — http post to the hosted vllm server
+# • token-level logprobs   (expand_leaf / get_next_token_logprobs_hf)
+#   → _hf_generate()       — local hf model (logits needed directly)
 #
 # Update the IPs/ports in utils.TEACHER_ENDPOINTS before running.
 
@@ -124,9 +124,9 @@ def _build_gen_params(cfg: TrainConfig) -> dict:
 
 def load_teachers(cfg: TrainConfig, device: torch.device):
     """
-    Load all three teacher models via Hugging Face **for token-level logprob
-    queries** (expand_leaf / get_next_token_logprobs_hf).  Long-form generation
-    is routed to the hosted SGLang servers in TEACHER_ENDPOINTS instead.
+    load all three teacher models via hugging face **for token-level logprob
+    queries** (expand_leaf / get_next_token_logprobs_hf).  long-form generation
+    is routed to the hosted vllm servers in TEACHER_ENDPOINTS instead.
 
     Returns:
         hf_tm1, hf_tm2, hf_tm3   - HF AutoModelForCausalLM instances (eval mode)
