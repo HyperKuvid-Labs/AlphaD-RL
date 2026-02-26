@@ -10,7 +10,7 @@ Architecture
 * Student  : Qwen/Qwen3-4B   → action policy (Yes / No at each MCTS step)
 * Teacher 1: openai/gpt-oss-20b
 * Teacher 2: Qwen/Qwen2.5-Coder-7B-Instruct
-* Teacher 3: deepseek-ai/DeepSeek-Coder-V2-Lite-Instruct
+* Teacher 3: mistralai/Codestral-22B-v0.1
 
 All models are loaded via Hugging Face AutoModelForCausalLM with explicit
 device placement (no device_map="auto") and a shared per-process GPU memory
@@ -64,7 +64,7 @@ log = logging.getLogger(__name__)
 #   TEACHER_ENDPOINTS = {
 #       "openai/gpt-oss-20b"                          : "http://PLACEHOLDER_IP_1:8000",
 #       "Qwen/Qwen2.5-Coder-14B-Instruct"            : "http://PLACEHOLDER_IP_2:8000",
-#       "deepseek-ai/DeepSeek-Coder-V2-Lite-Instruct": "http://PLACEHOLDER_IP_3:8000",
+#       "mistralai/Codestral-22B-v0.1": "http://PLACEHOLDER_IP_3:8000",
 #   }
 #
 # • long-form generation  (best solutions, continuation completions, scoring)

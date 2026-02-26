@@ -4,7 +4,7 @@ Multi-Teacher Monte Carlo Tree Search (MT-MCTS) for code generation, where 3+ di
 
 **Student model**: Qwen/Qwen3-4B
 
-**Teacher model**: Qwen/Qwen2.5-Coder-14B-Instruct, deepseek-ai/DeepSeek-Coder-V2-Lite-Instruct, openai/gpt-oss-20b
+**Teacher model**: Qwen/Qwen2.5-Coder-14B-Instruct, mistralai/Codestral-22B-v0.1, openai/gpt-oss-20b
 
 There are two phases in here:
 - training the model to determine, which level is enough for the token level, and generating the whole function from there

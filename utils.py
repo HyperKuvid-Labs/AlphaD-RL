@@ -7,9 +7,9 @@ import requests
 # token-level logprob queries (expand_leaf / get_next_token_logprobs_hf) still
 # run on the locally-loaded hf models — they need access to the raw logits.
 TEACHER_ENDPOINTS: dict = {
-    "openai/gpt-oss-20b":                          "http://100.92.198.45:8000",
-    "Qwen/Qwen2.5-Coder-14B-Instruct":             "http://100.125.110.76:8000",
-    "deepseek-ai/DeepSeek-Coder-V2-Lite-Instruct": "http://100.71.35.75:8000",
+    "openai/gpt-oss-20b":                          "http://100.109.49.52:8000",
+    "Qwen/Qwen2.5-Coder-14B-Instruct":             "http://100.82.195.32:8000",
+    "mistralai/Codestral-22B-v0.1": "http://100.121.167.86:8000",
 }
 
 # Ordered list: index 0 = tm1 (GPT), 1 = tm2 (Qwen), 2 = tm3 (DeepSeek)
