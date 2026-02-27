@@ -9,7 +9,7 @@ import os
 model_name = "openai/gpt-oss-20b"
 save_dir   = "./gpt-oss-20b-4bit-nf4"
 
-compute_dtype = torch.bfloat16 if torch.cuda.is_bfloat16_supported() else torch.float16
+compute_dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
 
 quant_config = BitsAndBytesConfig(
     load_in_4bit              = True,
