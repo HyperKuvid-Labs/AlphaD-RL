@@ -6,8 +6,8 @@ import os
 # Settings
 # ────────────────────────────────────────────────
 
-model_name = "openai/gpt-oss-20b"
-save_dir   = "./gpt-oss-20b-4bit-nf4"
+model_name = "mistralai/Codestral-22B-v0.1"
+save_dir   = "adrl-codestral-4bit"
 
 compute_dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
 
