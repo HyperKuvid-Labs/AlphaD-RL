@@ -5,9 +5,8 @@ import os
 # ────────────────────────────────────────────────
 # Settings
 # ────────────────────────────────────────────────
-
-model_name = "mistralai/Codestral-22B-v0.1"
-save_dir   = "adrl-codestral-4bit"
+model_name = "Qwen/Qwen2.5-Coder-14B-Instruct"
+save_dir   = "adrl-qwen2.5-coder-4bit"
 
 compute_dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
 
