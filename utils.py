@@ -27,7 +27,6 @@ def _vllm_generate(model_id: str, prompts: list, params: dict) -> list:
       - generate_best_solution   (up to 1024 tokens per teacher)
       - continuation completions in _terminate_and_evaluate
       - get_process_reward scoring
-
     do NOT use this for get_next_token_logprobs_hf / expand_leaf — those need
     raw logit tensors and must stay on the local hf model.
     """
@@ -382,3 +381,110 @@ def get_cr(completion_reward, test_passed_reward):
 
 def get_pr(num_leaves):
   return -1.0 if max(3.0, num_leaves) <= 3.0 else 1.0
+
+
+def get_stop_timing_reward(yes_steps_list: list, max_steps: int) -> list:
+    """
+    Rewards balanced stopping timing across the group of rollouts.
+
+    Intuition:
+    - Too early yes   → risk of incomplete / wrong code   → penalty
+    - Very late yes   → inefficient, shallow exploration  → penalty
+    - Stopping around ~40–70% of max_steps → often good
+
+    Formula (per rollout):
+        normalized_position = yes_step / max_steps
+        # Gaussian peaked around 0.55 (tuneable sweet spot)
+        r = exp( -(normalized_position - 0.55)^2 / (2 * 0.15^2) ) * 2 - 1
+
+    Group-normalize afterward (fits GRPO/GDPO style — done in compute_grpo_loss).
+
+    Args:
+        yes_steps_list: step index when "yes" was output per rollout,
+                        or max_steps + 1 if the rollout never stopped early.
+        max_steps:      hard cap on MCTS depth from config.
+
+    Returns:
+        List of per-rollout raw rewards in [-1, +1].
+    """
+    import math
+    rewards = []
+    for step in yes_steps_list:
+        if step > max_steps:
+            norm_pos = 1.0
+        else:
+            norm_pos = step / max_steps
+        # Gaussian centered ~55% depth, sigma ~15%
+        deviation = (norm_pos - 0.55) ** 2
+        r = math.exp(-deviation / (2 * 0.15 ** 2))
+        scaled = (r * 2) - 1   # → [-1, +1]
+        rewards.append(max(-1.0, min(1.0, scaled)))
+    return rewards
+
+
+def get_premature_stop_penalty(yes_decisions: list, partial_texts_at_yes: list) -> list:
+    """
+    Penalises rollouts that stopped early on clearly incomplete code.
+
+    Returns -1.0 if the rollout declared "yes" but the partial looks unfinished,
+    graded up to +0.5 if the partial looks functional.
+
+    Scoring rubric:
+        +0.4  has "def " (function defined)
+        +0.4  has "return " or "print(" (produces output)
+        +0.2  len(text.strip()) > 80 chars  (long enough to do something)
+        offset -0.6  → final range ≈ [-0.6, +0.4], clamped to [-1, +0.5]
+
+    Rollouts that did NOT stop (decided_yes=False) receive 0.0 (neutral).
+
+    Args:
+        yes_decisions:       List[bool] — True if the rollout terminated with yes.
+        partial_texts_at_yes: List[str] — partial code text at the time of yes.
+
+    Returns:
+        List of per-rollout raw rewards in [-1.0, +0.5].
+    """
+    rewards = []
+    for decided_yes, text in zip(yes_decisions, partial_texts_at_yes):
+        if not decided_yes:
+            rewards.append(0.0)   # no penalty if continued
+            continue
+        has_def     = "def "     in text
+        has_return  = "return "  in text or "print(" in text   # proxy for output
+        long_enough = len(text.strip()) > 80                   # tune per domain
+        score = 0.0
+        if has_def:     score += 0.4
+        if has_return:  score += 0.4
+        if long_enough: score += 0.2
+        r = score - 0.6   # maps [0, 1.0] → [-0.6, +0.4]
+        rewards.append(max(-1.0, min(0.5, r)))
+    return rewards
+
+
+def get_confidence_calibration(yes_logprobs: list, decided_yes: list) -> list:
+    """
+    Rewards the student for being confidently correct about its stop/continue decision.
+
+    For "yes" actions: reward high log-prob, penalise hesitant low log-prob.
+    For "no"  actions: small bonus for a confident continue.
+
+    Formula:
+        if yes:  r = 2.0 * lp - 1.0   (lp near 0 → +1, lp near -1 → -3 → clamped -1)
+        if no:   r = lp * 0.5          (small bonus for confident continue)
+
+    Args:
+        yes_logprobs: List[float] — log-probability of the action token(s) that
+                      triggered the stop/continue decision (negative scalars).
+        decided_yes:  List[bool]  — True if the rollout stopped at this step.
+
+    Returns:
+        List of per-rollout raw rewards in [-1.0, +1.0].
+    """
+    rewards = []
+    for lp, is_yes in zip(yes_logprobs, decided_yes):
+        if is_yes:
+            r = 2.0 * lp - 1.0   # lp usually negative
+        else:
+            r = lp * 0.5
+        rewards.append(max(-1.0, min(1.0, r)))
+    return rewards
