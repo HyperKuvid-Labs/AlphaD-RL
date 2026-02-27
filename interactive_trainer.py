@@ -218,6 +218,36 @@ THEME = {
     "reward":   "bold green",
 }
 
+LEVEL_GUESSER_EXPLANATION = """
+[bold cyan]Level Guesser – what we are actually training[/]
+
+This is a small policy we train with reinforcement learning.
+
+Its only job:
+
+Decide whether we should [bold]STOP[/] expanding the current partial code
+and evaluate the programs we can complete from here — or whether we should
+[bold]KEEP GOING[/] because the partial is still too uncertain / incomplete.
+
+We want it to learn to say [bold green]Yes (stop)[/] when:
+
+• the partial already shows a correct high-level algorithm / structure
+• strong models (teachers) mostly agree what should come next
+• continuing would most likely not find dramatically better solutions
+• the direction looks compatible with the optimal time complexity
+
+And say [bold yellow]No (continue)[/] when:
+
+• the partial is still ambiguous, buggy or clearly missing key parts
+• teachers disagree a lot → high uncertainty
+• we are still early → more search is likely valuable
+
+In one sentence:
+
+[italic]Level Guesser learns to recognize the moment when further search
+is unlikely to be worth the extra tokens — imitating a very strong but lazy expert.[/]
+"""
+
 
 def banner() -> None:
     console.print(Panel(
@@ -491,6 +521,7 @@ class HumanMCTSEnvironment:
         self.last_leaf_text     = ""   # updated each expansion step; used by rollout
         self._problem_idx       = 0    # set by reset()
         self._rollout_idx       = 0    # set by reset()
+        self.step_history:      List[dict] = []   # per-step summary records
 
     # ── public API ────────────────────────────────────────────────────────────
 
@@ -583,6 +614,7 @@ class HumanMCTSEnvironment:
         self._problem_idx       = problem_idx
         self._rollout_idx       = rollout_idx
         self.root_node          = Node(None, "", None)
+        self.step_history       = []
 
         section("Golden / Best Solution")
         console.print(Panel(
@@ -682,6 +714,15 @@ class HumanMCTSEnvironment:
             child = Node(None, leaf.generated_text + tok_text, leaf)
             leaf.add_child(child)
 
+        # ── step context breakdown (shown before asking for process reward) ────
+        self._show_step_context(
+            step_num=self.step_count,
+            leaf_text=leaf.generated_text,
+            all_tokens=all_tokens,
+            teachers_agreement=teachers_agreement,
+            top_tokens_per_teacher=top_tokens_per_teacher,
+        )
+
         # ── per-teacher process reward (averaged) ─────────────────────────────
         self._show_partial(leaf.generated_text, title="Partial for process reward")
         section("Process Reward  — score from each teacher")
@@ -701,6 +742,17 @@ class HumanMCTSEnvironment:
                 )
 
         reward = max(-1.0, min(1.0, sum(pr_scores) / len(pr_scores)))
+
+        # ── record step in history ──────────────────────────────────────────
+        self.step_history.append({
+            "step":        self.step_count,
+            "tokens":      [(t, round(lp, 3)) for t, lp in all_tokens[:6]],
+            "agree":       teachers_agreement,
+            "pr_scores":   pr_scores,
+            "reward":      reward,
+            "partial_len": len(leaf.generated_text),
+        })
+
         console.print(
             f"  [{THEME['ok']}]Average process reward:[/]  [bold]{reward:+.3f}[/]  "
             f"(from {[f'{s:+.2f}' for s in pr_scores]})"
@@ -855,6 +907,102 @@ class HumanMCTSEnvironment:
         node.value       += reward
         if node.parent is not None:
             self._backpropagate(node.parent, reward)
+
+    # ── step context breakdown ────────────────────────────────────────────────
+
+    def _show_step_context(
+        self,
+        step_num: int,
+        leaf_text: str,
+        all_tokens: List[Tuple[str, float]],
+        teachers_agreement: bool,
+        top_tokens_per_teacher: List[Optional[str]],
+    ) -> None:
+        """
+        Concise but complete status panel shown before the process-reward prompt.
+        Covers:
+          • training progress  (problem / rollout / MCTS step)
+          • level guesser summary (role, I/O, current target)
+          • history table of all steps completed so far
+          • current expansion summary (tokens + consensus)
+        """
+        # ── training progress strip ───────────────────────────────────────────
+        progress_text = (
+            f"Problem [bold cyan]#{self._problem_idx + 1}[/]  "
+            f"│  Rollout [bold cyan]#{self._rollout_idx + 1}[/]  "
+            f"│  MCTS Step [bold yellow]{step_num}[/] / [dim]{self.cfg.max_steps}[/]  "
+            f"│  Golden TC: [bold green]"
+            f"{f'O({self.golden_tc})' if self.golden_tc else 'unknown'}[/]"
+        )
+
+        # ── level guesser summary ─────────────────────────────────────────────
+        lg_lines = (
+            "[bold white]Level Guesser[/bold white] — the student policy that "
+            "decides [bold]Yes[/bold] (stop & evaluate) or [bold]No[/bold] "
+            "(keep expanding) at each MCTS step.\n"
+            "  [dim]Input :[/dim]  state string  "
+            "[italic](Length, TeachersAgree, NodeValue, NodeCount)[/italic]\n"
+            "  [dim]Output:[/dim]  Yes / No token + log-prob  "
+            "[dim](drives GRPO advantage)[/dim]\n"
+            f"  [dim]Target :[/dim]  stop when partial converges to  "
+            f"[bold green]O({self.golden_tc or '?'})[/bold green]  "
+            f"and teachers agree on top token"
+        )
+
+        console.print()
+        console.print(Panel(
+            f"{progress_text}\n\n{lg_lines}",
+            title="[bold cyan]▸ Training Context  &  Level Guesser[/bold cyan]",
+            border_style="cyan",
+            padding=(0, 2),
+        ))
+
+        # ── step history table ────────────────────────────────────────────────
+        if self.step_history:
+            ht = Table(
+                title="Step History",
+                box=box.SIMPLE_HEAVY,
+                border_style="blue",
+                show_lines=False,
+            )
+            ht.add_column("Step",      style="dim",         width=5)
+            ht.add_column("Len",       style="white",       width=6)
+            ht.add_column("Agree",     style="bold",        width=7)
+            ht.add_column("Reward",    style="bold green",  width=8)
+            ht.add_column("PR scores", style="dim white",   width=20)
+            ht.add_column("Top tokens (up to 3)", style="dim white")
+            for rec in self.step_history:
+                agree_cell = "[green]✓[/]" if rec["agree"] else "[yellow]✗[/]"
+                pr_str  = "  ".join(f"{s:+.2f}" for s in rec["pr_scores"])
+                tok_str = "  ".join(f"{t!r}" for t, _ in rec["tokens"][:3])
+                ht.add_row(
+                    str(rec["step"]),
+                    str(rec["partial_len"]),
+                    agree_cell,
+                    f"{rec['reward']:+.3f}",
+                    pr_str,
+                    tok_str,
+                )
+            console.print(ht)
+
+        # ── current expansion summary ─────────────────────────────────────────
+        cur_toks = "  ".join(
+            f"[bold]{t!r}[/] ({lp:+.2f})"
+            for t, lp in all_tokens[: self.cfg.tokens_per_expand]
+        )
+        agree_badge = (
+            f"[bold green]✓ All agree → {top_tokens_per_teacher[0]!r}[/]"
+            if (teachers_agreement and top_tokens_per_teacher and
+                top_tokens_per_teacher[0] is not None)
+            else f"[bold yellow]✗ No consensus  tops={top_tokens_per_teacher}[/]"
+        )
+        console.print(Panel(
+            f"New tokens : {cur_toks or '(none)'}\n"
+            f"Consensus  : {agree_badge}",
+            title=f"[bold blue]Step {step_num} — Expansion[/bold blue]",
+            border_style="blue",
+            padding=(0, 2),
+        ))
 
     @staticmethod
     def _get_all_leaves(node: Node) -> List[Node]:
