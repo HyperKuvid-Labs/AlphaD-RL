@@ -35,6 +35,9 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import List, Optional, Tuple
 
+import urllib.error
+import urllib.request
+
 import torch
 import torch.nn.functional as F
 from torch.optim import AdamW
@@ -69,6 +72,84 @@ except ImportError:
     sys.exit(1)
 
 console = Console()
+
+# ──────────────────────────────────────────────────────────────────────────────
+# vLLM token-expansion helper
+# ──────────────────────────────────────────────────────────────────────────────
+
+# Set VLLM_ENDPOINT to your vLLM server base URL  (e.g. http://localhost:8000)
+# Set VLLM_MODEL   to the model served by vLLM    (e.g. Qwen/Qwen2.5-Coder-14B)
+_VLLM_ENDPOINT: str = os.environ.get("VLLM_ENDPOINT", "").rstrip("/")
+_VLLM_MODEL:    str = os.environ.get("VLLM_MODEL",    "")
+
+
+def _fetch_tokens_vllm(
+    partial_code: str,
+    n: int,
+    teacher_name: str,
+) -> Optional[List[Tuple[str, float]]]:
+    """
+    Request the top-*n* next-token candidates from a vLLM
+    ``/v1/chat/completions`` endpoint.
+
+    Environment variables
+    ---------------------
+    VLLM_ENDPOINT  – base URL of the vLLM server  (e.g. http://localhost:8000)
+    VLLM_MODEL     – model name served by vLLM    (e.g. Qwen/Qwen2.5-Coder-14B)
+
+    Returns
+    -------
+    List of (token, log_prob) pairs on success, or *None* on any error so the
+    caller can fall back to the human-input prompt.
+    """
+    if not _VLLM_ENDPOINT:
+        return None
+
+    model = _VLLM_MODEL or "default"
+    payload = json.dumps({
+        "model":       model,
+        "messages": [
+            {
+                "role":    "system",
+                "content": (
+                    "You are an expert code-completion assistant. "
+                    "Continue the following Python code exactly where it left off."
+                ),
+            },
+            {"role": "user", "content": partial_code},
+        ],
+        "max_tokens":    1,
+        "temperature":   0.0,
+        "logprobs":      True,
+        "top_logprobs":  max(n, 1),
+    }).encode()
+
+    url = f"{_VLLM_ENDPOINT}/v1/chat/completions"
+    req = urllib.request.Request(
+        url,
+        data=payload,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            data = json.loads(resp.read().decode())
+    except Exception as exc:
+        warn(f"vLLM call failed ({teacher_name}): {exc}  → falling back to human input")
+        return None
+
+    try:
+        top_lps = (
+            data["choices"][0]["logprobs"]["content"][0]["top_logprobs"]
+        )
+        tokens: List[Tuple[str, float]] = [
+            (entry["token"], float(entry["logprob"])) for entry in top_lps
+        ]
+        return tokens[:n] if tokens else None
+    except (KeyError, IndexError, TypeError) as exc:
+        warn(f"vLLM response parse error ({teacher_name}): {exc}  → falling back to human input")
+        return None
+
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Config
@@ -663,11 +744,24 @@ class HumanMCTSEnvironment:
                 f"[{THEME['header']}]Teacher {t_idx+1}/{len(self.cfg.teacher_names)}  —  {t_name}[/]",
                 style="yellow",
             ))
-            t_toks = _read_tokens(
-                f"Top-{self.cfg.tokens_per_expand} expansion tokens from [bold]{t_name}[/] "
-                f"(format: token  or  token : -0.45):",
+            # ── try vLLM endpoint first; fall back to human input ─────────────
+            t_toks = _fetch_tokens_vllm(
+                leaf.generated_text,
                 self.cfg.tokens_per_expand,
+                t_name,
             )
+            if t_toks is not None:
+                info(
+                    f"vLLM ({_VLLM_ENDPOINT}) returned "
+                    f"{len(t_toks)} token(s) for {t_name}: "
+                    + ", ".join(f"{tok!r} ({lp:+.3f})" for tok, lp in t_toks)
+                )
+            else:
+                t_toks = _read_tokens(
+                    f"Top-{self.cfg.tokens_per_expand} expansion tokens from [bold]{t_name}[/] "
+                    f"(format: token  or  token : -0.45):",
+                    self.cfg.tokens_per_expand,
+                )
             if t_toks:
                 top_tokens_per_teacher.append(t_toks[0][0])
                 all_tokens.extend(t_toks)
