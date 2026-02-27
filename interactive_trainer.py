@@ -6,7 +6,7 @@ Human-in-the-loop GRPO trainer.
 Instead of calling remote teacher-model servers, every oracle call is routed
 back to *you* at the terminal:
 
-  • Best solution  → you paste the golden code
+  • Best solution  → taken directly from the dataset (best_solution field)
   • Token expansion → you type next tokens (comma-separated) with optional
                       log-probability scores
   • Process reward  → you rate the partial solution on [-1, 1]
@@ -486,6 +486,7 @@ class HumanMCTSEnvironment:
         self.current_entrypoint = ""
         self.root_node: Optional[Node] = None
         self.golden_solution    = ""
+        self.golden_tc:  Optional[str] = None   # e.g. "n log n" from O(n log n)
         self.step_count         = 0
         self.last_leaf_text     = ""   # updated each expansion step; used by rollout
         self._problem_idx       = 0    # set by reset()
@@ -499,6 +500,13 @@ class HumanMCTSEnvironment:
         code = re.sub(r'```(?:python)?\n?', '', raw)
         code = re.sub(r'```', '', code)
         return code.strip()
+
+    @staticmethod
+    def _strip_time_complexity(code: str) -> str:
+        """Remove a trailing '# Time [Cc]omplexity: O(...)' comment line from code."""
+        return re.sub(
+            r'\n?#\s*[Tt]ime\s*[Cc]omplexity\s*:.*$', '', code, flags=re.MULTILINE
+        ).strip()
 
     @staticmethod
     def _parse_time_complexity(code: str) -> Optional[str]:
@@ -563,6 +571,7 @@ class HumanMCTSEnvironment:
         prompt: str,
         test: str,
         entrypoint: str,
+        best_solution: str = "",
         problem_idx: int = 0,
         rollout_idx: int = 0,
     ) -> str:
@@ -582,142 +591,23 @@ class HumanMCTSEnvironment:
             border_style="cyan",
         ))
 
-        console.print()
-        console.print(Panel(
-            f"[{THEME['dim']}]Collect the best solution from each teacher.\n"
-            f"Each solution [bold]MUST[/] end with a time-complexity comment, e.g.:\n"
-            f"  [bold cyan]# Time Complexity: O(n log n)[/]\n"
-            f"If the comment is missing, you will be prompted to enter it manually.[/]",
-            border_style="yellow",
-            title="[bold yellow]Instructions[/]",
-        ))
+        # ── extract code + time complexity from the dataset best_solution ──────
+        raw_code         = self._extract_code(best_solution)
+        self.golden_tc   = self._parse_time_complexity(raw_code)          # e.g. "n log n"
+        self.golden_solution = self._strip_time_complexity(raw_code)      # pure code only
 
-        teacher_solutions = _read_teacher_responses(
-            self.cfg.teacher_names,
-            action_label="Best Solution",
-            hint=(
-                "Paste this teacher's best / reference solution.\n"
-                "End the code with:  # Time Complexity: O(<expression in n>)"
-            ),
-        )
+        tc_display = f"O({self.golden_tc})" if self.golden_tc else "(not found)"
+        info(f"Golden solution loaded from dataset  |  Time complexity: {tc_display}")
 
-        # ── extract code + run tests + collect time complexities ─────────────
-        section("Evaluating Teacher Solutions Against Test Cases")
-
-        eval_results: List[dict] = []  # keys: name, code, passed, tc_str, out, err
-
-        for i, (name, raw_sol) in enumerate(zip(self.cfg.teacher_names, teacher_solutions)):
-            code = self._extract_code(raw_sol)
-            tc_str = self._parse_time_complexity(code)
-
-            # if no time complexity comment found, ask the human
-            if tc_str is None:
-                warn(
-                    f"No '# Time Complexity: O(...)' found in {name}'s solution.\n"
-                    f"  Please enter it now (just the expression, e.g. [bold]n log n[/])."
-                )
-                tc_str = Prompt.ask(
-                    f"  [{THEME['prompt']}]Time complexity for {name} (expression inside O(...))[/]",
-                    default="",
-                ).strip() or None
-
-            passed, out, err = self._run_solution_against_tests(
-                code, test, entrypoint, label=f"teacher_{i}"
-            )
-            eval_results.append({
-                "name":    name,
-                "code":    code,
-                "passed":  passed,
-                "tc_str":  tc_str,
-                "out":     out,
-                "err":     err,
-            })
-
-        # ── display evaluation table ──────────────────────────────────────────
-        tbl = Table(
-            title="Teacher Solution Evaluation",
-            box=box.ROUNDED, border_style="cyan",
-        )
-        tbl.add_column("#",               style="dim",       width=4)
-        tbl.add_column("Teacher",         style="bold cyan", width=26)
-        tbl.add_column("Tests",           style="bold",      width=8)
-        tbl.add_column("Time Complexity", style="yellow",    width=20)
-        tbl.add_column("Output / Error",  style="dim red")
-
-        for i, r in enumerate(eval_results):
-            tc_display = f"O({r['tc_str']})" if r["tc_str"] else "[dim]unknown[/]"
-            status     = "[green]PASS[/]" if r["passed"] else "[red]FAIL[/]"
-            snippet    = escape((r["err"] or r["out"])[:70])
-            tbl.add_row(str(i), r["name"], status, tc_display, snippet)
-
-        console.print(tbl)
-
-        # ── auto-pick best solution ───────────────────────────────────────────
-        # Priority 1: prefer solutions whose tests pass
-        passing_idx = [i for i, r in enumerate(eval_results) if r["passed"]]
-        candidate_idx = passing_idx if passing_idx else list(range(len(eval_results)))
-
-        if not passing_idx:
-            warn("No teacher solution passed the test cases — falling back to time-complexity comparison.")
-
-        # Priority 2: best (lowest) time complexity among candidates
-        tc_vals   = {i: self._tc_numeric(eval_results[i]["tc_str"]) for i in candidate_idx}
-        min_tc    = min(tc_vals.values())
-        best_by_tc = [i for i, v in tc_vals.items() if v == min_tc]
-
-        if len(best_by_tc) == 1:
-            best_idx   = best_by_tc[0]
-            tc_label   = f"O({eval_results[best_idx]['tc_str']})" if eval_results[best_idx]["tc_str"] else "O(?)"
-            pass_label = " + tests pass" if eval_results[best_idx]["passed"] else ""
-            info(
-                f"Auto-selected Teacher {best_idx} "
-                f"({eval_results[best_idx]['name']}) — {tc_label}{pass_label}"
-            )
-        else:
-            # tie on time complexity → ask the human to rate
-            warn(
-                "Multiple solutions are tied"
-                + (" (same time complexity)" if min_tc < float("inf") else " (time complexity unknown)")
-                + ". Please pick the best one."
-            )
-            section("Choose the Golden Solution — Human Rating Required")
-            for i in best_by_tc:
-                r = eval_results[i]
-                preview = (r["code"].strip()[:300] + "…") if len(r["code"]) > 300 else r["code"].strip()
-                tc_label = f"O({r['tc_str']})" if r["tc_str"] else "O(?)"
-                console.print(Panel(
-                    Syntax(preview or "(empty)", "python", theme="monokai", word_wrap=True),
-                    title=(
-                        f"[bold cyan][{i}] {r['name']}[/]  "
-                        f"{'[green]PASS[/]' if r['passed'] else '[red]FAIL[/]'}  "
-                        f"{tc_label}"
-                    ),
-                    border_style="cyan",
-                ))
-
-            choices = [str(i) for i in range(len(eval_results))]
-            best_idx_raw = Prompt.ask(
-                f"  [{THEME['prompt']}]Which teacher's solution is best? Enter index "
-                f"({' / '.join(choices)})[/]",
-                choices=choices,
-                default=str(best_by_tc[0]),
-            )
-            best_idx = int(best_idx_raw)
-
-        self.golden_solution = eval_results[best_idx]["code"]
-        info(f"Golden solution → Teacher {best_idx} ({self.cfg.teacher_names[best_idx]})")
-
-        # ── log all teacher submissions + which was selected ──────────────────
+        # ── log the best solution ─────────────────────────────────────────────
         if self.logger:
-            for t_name, raw_sol in zip(self.cfg.teacher_names, teacher_solutions):
-                self.logger.log_golden_solution(
-                    self._problem_idx, self._rollout_idx, prompt,
-                    t_name, raw_sol,
-                    selected=(t_name == self.cfg.teacher_names[best_idx]),
-                )
+            self.logger.log_golden_solution(
+                self._problem_idx, self._rollout_idx, prompt,
+                "dataset", best_solution, selected=True,
+            )
 
         if not self.golden_solution.strip():
-            warn("No golden solution provided — process rewards will be 0.")
+            warn("No golden solution found in dataset — process rewards will be 0.")
 
         self._show_golden()
         return "Length:0, Agree:False, Value:0.00, Nodes:0. Stop? (Yes/No):"
@@ -985,9 +875,10 @@ class HumanMCTSEnvironment:
 
     def _show_golden(self) -> None:
         if self.golden_solution.strip():
+            tc_label = f"O({self.golden_tc})" if self.golden_tc else "unknown"
             console.print(Panel(
                 Syntax(self.golden_solution, "python", theme="monokai", word_wrap=True),
-                title="[bold green]Golden Solution (recorded)[/]",
+                title=f"[bold green]Golden Solution[/]  [yellow]Time complexity: {tc_label}[/]",
                 border_style="green",
             ))
 
@@ -1134,13 +1025,14 @@ def run_rollout(
     prompt: str,
     test: str,
     entrypoint: str,
+    best_solution: str,
     cfg: InteractiveTrainConfig,
     device: torch.device,
     rollout_idx: int,
 ) -> Tuple[List[str], List[str], float, float]:
 
     section(f"Rollout {rollout_idx + 1}")
-    state = env.reset(prompt, test, entrypoint)
+    state = env.reset(prompt, test, entrypoint, best_solution=best_solution)
     states:  List[str] = []
     actions: List[str] = []
 
@@ -1500,6 +1392,7 @@ def train(cfg: InteractiveTrainConfig = InteractiveTrainConfig()) -> None:
             states, actions, cr, pr = run_rollout(
                 student, student_tok, env,
                 prompt, test_str, entrypoint,
+                problem.get("best_solution", ""),
                 cfg, device, g,
             )
             group_trajectories.append((states, actions))
