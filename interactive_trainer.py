@@ -1021,6 +1021,14 @@ class HumanMCTSEnvironment:
         )
 
         console.print()
+
+        console.print(Panel(
+            LEVEL_GUESSER_EXPLANATION,
+            title="[bold cyan]What is the Level Guesser?[/]",
+            border_style="cyan",
+            padding=(0, 2),
+        ))
+        
         console.print(Panel(
             f"{progress_text}\n\n{lg_lines}",
             title="[bold cyan]▸ Training Context  &  Level Guesser[/bold cyan]",
