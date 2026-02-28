@@ -9,6 +9,6 @@ pip install nvidia-cudnn-cu12==9.16.0.29
 # echo "syncing uv"
 # uv sync
 echo "installing torch and transformers and tensorboard"
+pip install vllm
 pip install torch transformers datasets trl tensorboard bitsandbytes
 
-pip install vllm
