@@ -1182,7 +1182,7 @@ def load_dataset_problems() -> list:
     with Progress(SpinnerColumn(), TextColumn("[bold cyan]{task.description}"),
                   console=console, transient=True) as prog:
         prog.add_task("Fetching HumanEval …", total=None)
-        ds = load_dataset("Pradheep1647/openeval_bs")
+        ds = load_dataset("Pradheep1647/openeval_bs", split="train")
     info(f"Loaded {len(ds)} problems")
     return list(ds)
 
