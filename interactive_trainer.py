@@ -89,17 +89,17 @@ TEACHER_MODELS: List[dict] = [
     {
         "display_name": "GPT-oss-20B",
         "name":         "openai/gpt-oss-20b",
-        "base_url":     os.environ.get("VLLM_URL_0", "http://100.102.32.122:8002"),
+        "base_url":     os.environ.get("VLLM_URL_0", "100.73.177.66:8002"),
     },
     {
         "display_name": "Qwen2.5-Coder-14B",
         "name":         "Pradheep1647/adrl-qwen2.5-coder-4bit",
-        "base_url":     os.environ.get("VLLM_URL_1", "http://100.18.91.11:8000"),
+        "base_url":     os.environ.get("VLLM_URL_1", "http://100.106.99.109:8000"),
     },
     {
         "display_name": "Codestral-22B",
         "name":         "Pradheep1647/adrl-codestral-4bit",
-        "base_url":     os.environ.get("VLLM_URL_2", "http://100.91.18.11:8001"),
+        "base_url":     os.environ.get("VLLM_URL_2", "http://100.127.121.101:8001"),
     },
 ]
 
