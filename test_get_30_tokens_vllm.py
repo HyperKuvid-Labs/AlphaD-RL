@@ -20,13 +20,11 @@ import requests
 
 # ── server config from quant_init.sh ─────────────────────────────────────────
 MODELS = [
-    {"name": "Pradheep1647/adrl-qwen2.5-coder-4bit", "base_url": "http://100.91.18.11:8000"},
     {"name": "Pradheep1647/adrl-codestral-4bit", "base_url": "http://100.91.18.11:8001"},
-    {"name": "openai/gpt-oss-20b", "base_url": "http://100.91.18.11:8002"},
 ]
 
 # ── prompt to test ─────────────────────────────────────────────────────────────
-TEST_PROMPT = "hello fucker"
+TEST_PROMPT = "def fibonacci(n):"
 
 
 def get_next_token_logprobs_vllm(model_name: str, base_url: str, prompt: str):
