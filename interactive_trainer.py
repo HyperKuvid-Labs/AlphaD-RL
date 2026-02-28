@@ -1182,11 +1182,7 @@ def load_dataset_problems() -> list:
     with Progress(SpinnerColumn(), TextColumn("[bold cyan]{task.description}"),
                   console=console, transient=True) as prog:
         prog.add_task("Fetching HumanEval …", total=None)
-        try:
-            ds = load_dataset("Pradheep1647/openeval_bs", split="test")
-        except Exception as exc:
-            warn(f"Primary load failed ({exc}); trying evalplus/humanevalplus …")
-            ds = load_dataset("evalplus/humanevalplus", split="test")
+        ds = load_dataset("Pradheep1647/openeval_bs")
     info(f"Loaded {len(ds)} problems")
     return list(ds)
 
