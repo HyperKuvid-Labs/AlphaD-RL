@@ -119,7 +119,7 @@ def _get_next_token_logprobs_vllm(
         "max_tokens":  1,
         "temperature": 0.0,
         "logprobs":    20,
-        "echo":        False,
+        # "echo":        False,
     }
     resp = requests.post(f"{base_url}/v1/completions", json=payload, timeout=60)
     print(f"Response: {resp}")
