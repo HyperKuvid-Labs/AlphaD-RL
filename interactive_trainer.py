@@ -38,6 +38,12 @@ from typing import List, Optional, Tuple
 import urllib.error
 import urllib.request
 
+try:
+    import requests as _requests
+    _REQUESTS_AVAILABLE = True
+except ImportError:
+    _REQUESTS_AVAILABLE = False
+
 import torch
 import torch.nn.functional as F
 from torch.optim import AdamW
@@ -74,80 +80,160 @@ except ImportError:
 console = Console()
 
 # ──────────────────────────────────────────────────────────────────────────────
-# vLLM token-expansion helper
+# Teacher model servers  (one entry per teacher, each at its own IP/port)
+# Mirrors the layout from quant_init.sh / test_get_30_tokens_vllm.py
+# Override individual base_url values or add/remove entries as needed.
 # ──────────────────────────────────────────────────────────────────────────────
 
-# Set VLLM_ENDPOINT to your vLLM server base URL  (e.g. http://localhost:8000)
-# Set VLLM_MODEL   to the model served by vLLM    (e.g. Qwen/Qwen2.5-Coder-14B)
-_VLLM_ENDPOINT: str = os.environ.get("VLLM_ENDPOINT", "").rstrip("/")
-_VLLM_MODEL:    str = os.environ.get("VLLM_MODEL",    "")
+TEACHER_MODELS: List[dict] = [
+    {
+        "display_name": "GPT-oss-20B",
+        "name":         "openai/gpt-oss-20b",
+        "base_url":     os.environ.get("VLLM_URL_0", "http://100.102.32.122:8002"),
+    },
+    {
+        "display_name": "Qwen2.5-Coder-14B",
+        "name":         "Pradheep1647/adrl-qwen2.5-coder-4bit",
+        "base_url":     os.environ.get("VLLM_URL_1", "http://100.18.91.11:8000"),
+    },
+    {
+        "display_name": "Codestral-22B",
+        "name":         "Pradheep1647/adrl-codestral-4bit",
+        "base_url":     os.environ.get("VLLM_URL_2", "http://100.91.18.11:8001"),
+    },
+]
+
+
+def _get_next_token_logprobs_vllm(
+    model_name: str,
+    base_url: str,
+    prompt: str,
+    top_n: int = 20,
+) -> List[Tuple[str, float]]:
+    """
+    Query a vLLM ``/v1/completions`` server for the log-prob distribution
+    over the next token (mirrors ``get_next_token_logprobs_vllm`` in
+    test_get_30_tokens_vllm.py).
+
+    Returns a list of (token_str, logprob) sorted descending by logprob.
+    Raises on HTTP / parse errors so callers can catch and fall back.
+    """
+    payload = {
+        "model":       model_name,
+        "prompt":      prompt,
+        "max_tokens":  1,
+        "temperature": 0.0,
+        "logprobs":    max(top_n, 1),
+        "echo":        False,
+    }
+
+    if _REQUESTS_AVAILABLE:
+        resp = _requests.post(
+            f"{base_url}/v1/completions", json=payload, timeout=60
+        )
+        resp.raise_for_status()
+        data = resp.json()
+    else:
+        raw = json.dumps(payload).encode()
+        req = urllib.request.Request(
+            f"{base_url}/v1/completions",
+            data=raw,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=60) as r:
+            data = json.loads(r.read().decode())
+
+    choice           = data["choices"][0]
+    logprobs_obj     = choice.get("logprobs", {})
+    top_logprobs_list = logprobs_obj.get("top_logprobs", [])
+
+    if not top_logprobs_list:
+        raise ValueError(f"No logprobs returned from {model_name} at {base_url}")
+
+    token_logprob_map = top_logprobs_list[0]
+    distribution: List[Tuple[str, float]] = []
+    for token_id_str, info in token_logprob_map.items():
+        if isinstance(info, dict):
+            lp  = info.get("logprob", float("-inf"))
+            tok = info.get("decoded_token", info.get("token", str(token_id_str)))
+        else:
+            lp  = float(info)
+            tok = str(token_id_str)
+        distribution.append((tok, lp))
+
+    distribution.sort(key=lambda x: x[1], reverse=True)
+    return distribution
+
+
+def get_30_tokens_vllm(
+    prompt: str,
+    top_k: int = 5,
+) -> Tuple[List[Tuple[str, str, str, float]], bool]:
+    """
+    Collect ``top_k`` best + ``top_k`` worst next-token candidates from every
+    teacher model (mirrors ``get_30_tokens_vllm`` in test_get_30_tokens_vllm.py).
+
+    Returns
+    -------
+    all_tokens        : list of (display_name, rank_label, token, logprob)
+    teachers_agreement: True when every reachable teacher agrees on top-1 token
+    """
+    all_tokens: List[Tuple[str, str, str, float]] = []
+    top1_tokens: List[str] = []
+
+    for model_cfg in TEACHER_MODELS:
+        try:
+            distribution = _get_next_token_logprobs_vllm(
+                model_cfg["name"], model_cfg["base_url"], prompt
+            )
+        except Exception as exc:
+            warn(f"[{model_cfg['display_name']}] vLLM call failed: {exc}")
+            continue
+
+        top_tokens    = distribution[:top_k]
+        bottom_tokens = distribution[-top_k:][::-1]
+
+        top1_tokens.append(top_tokens[0][0])
+
+        for rank, (tok, lp) in enumerate(top_tokens, start=1):
+            all_tokens.append((model_cfg["display_name"], f"top-{rank}",    tok, lp))
+        for rank, (tok, lp) in enumerate(bottom_tokens, start=1):
+            all_tokens.append((model_cfg["display_name"], f"bottom-{rank}", tok, lp))
+
+    teachers_agreement = len(set(top1_tokens)) == 1 if len(top1_tokens) >= 2 else True
+    return all_tokens, teachers_agreement
 
 
 def _fetch_tokens_vllm(
     partial_code: str,
     n: int,
-    teacher_name: str,
+    teacher_idx: int,
 ) -> Optional[List[Tuple[str, float]]]:
     """
-    Request the top-*n* next-token candidates from a vLLM
-    ``/v1/chat/completions`` endpoint.
+    Fetch the top-*n* next-token candidates for the teacher at *teacher_idx*
+    using the ``/v1/completions`` endpoint at that teacher's dedicated IP/port.
 
-    Environment variables
-    ---------------------
-    VLLM_ENDPOINT  – base URL of the vLLM server  (e.g. http://localhost:8000)
-    VLLM_MODEL     – model name served by vLLM    (e.g. Qwen/Qwen2.5-Coder-14B)
-
-    Returns
-    -------
-    List of (token, log_prob) pairs on success, or *None* on any error so the
-    caller can fall back to the human-input prompt.
+    Returns a list of (token, logprob) pairs on success, or *None* so the
+    caller can fall back to human input.
     """
-    if not _VLLM_ENDPOINT:
+    if teacher_idx >= len(TEACHER_MODELS):
         return None
 
-    model = _VLLM_MODEL or "default"
-    payload = json.dumps({
-        "model":       model,
-        "messages": [
-            {
-                "role":    "system",
-                "content": (
-                    "You are an expert code-completion assistant. "
-                    "Continue the following Python code exactly where it left off."
-                ),
-            },
-            {"role": "user", "content": partial_code},
-        ],
-        "max_tokens":    1,
-        "temperature":   0.0,
-        "logprobs":      True,
-        "top_logprobs":  max(n, 1),
-    }).encode()
-
-    url = f"{_VLLM_ENDPOINT}/v1/chat/completions"
-    req = urllib.request.Request(
-        url,
-        data=payload,
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            data = json.loads(resp.read().decode())
-    except Exception as exc:
-        warn(f"vLLM call failed ({teacher_name}): {exc}  → falling back to human input")
-        return None
+    model_cfg  = TEACHER_MODELS[teacher_idx]
+    model_name = model_cfg["name"]
+    base_url   = model_cfg["base_url"]
 
     try:
-        top_lps = (
-            data["choices"][0]["logprobs"]["content"][0]["top_logprobs"]
+        distribution = _get_next_token_logprobs_vllm(
+            model_name, base_url, partial_code, top_n=max(n, 20)
         )
-        tokens: List[Tuple[str, float]] = [
-            (entry["token"], float(entry["logprob"])) for entry in top_lps
-        ]
-        return tokens[:n] if tokens else None
-    except (KeyError, IndexError, TypeError) as exc:
-        warn(f"vLLM response parse error ({teacher_name}): {exc}  → falling back to human input")
+        return distribution[:n] if distribution else None
+    except Exception as exc:
+        warn(
+            f"vLLM call failed [{model_cfg['display_name']} @ {base_url}]: "
+            f"{exc}  → falling back to human input"
+        )
         return None
 
 
@@ -182,12 +268,10 @@ class InteractiveTrainConfig:
     max_steps: int     = 8         # hard cap on MCTS depth per rollout
     tokens_per_expand: int = 5     # how many tokens you give per expansion
 
-    # ── teacher names (display only) ─────────────────────────────────────────
-    teacher_names: List[str] = field(default_factory=lambda: [
-        "GPT-oss-20B",
-        "Qwen2.5-Coder-14B",
-        "Codestral-22B",
-    ])
+    # ── teacher names (display only — kept in sync with TEACHER_MODELS) ────────
+    teacher_names: List[str] = field(
+        default_factory=lambda: [m["display_name"] for m in TEACHER_MODELS]
+    )
 
     # ── human-input logging ───────────────────────────────────────────────────
     log_inputs_path: str = "human_inputs.jsonl"  # set to "" to disable
@@ -670,11 +754,12 @@ class HumanMCTSEnvironment:
             t_toks = _fetch_tokens_vllm(
                 leaf.generated_text,
                 self.cfg.tokens_per_expand,
-                t_name,
+                t_idx,          # each teacher has its own IP/port in TEACHER_MODELS
             )
             if t_toks is not None:
+                _url = TEACHER_MODELS[t_idx]["base_url"] if t_idx < len(TEACHER_MODELS) else "?"
                 info(
-                    f"vLLM ({_VLLM_ENDPOINT}) returned "
+                    f"vLLM ({_url}) returned "
                     f"{len(t_toks)} token(s) for {t_name}: "
                     + ", ".join(f"{tok!r} ({lp:+.3f})" for tok, lp in t_toks)
                 )
