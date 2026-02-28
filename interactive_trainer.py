@@ -38,12 +38,7 @@ from typing import List, Optional, Tuple
 import urllib.error
 import urllib.request
 
-try:
-    import requests as _requests
-    _REQUESTS_AVAILABLE = True
-except ImportError:
-    _REQUESTS_AVAILABLE = False
-
+import requests
 import torch
 import torch.nn.functional as F
 from torch.optim import AdamW
@@ -126,24 +121,9 @@ def _get_next_token_logprobs_vllm(
         "logprobs":    max(top_n, 1),
         "echo":        False,
     }
-
-    if _REQUESTS_AVAILABLE:
-        resp = _requests.post(
-            f"{base_url}/v1/completions", json=payload, timeout=60
-        )
-        resp.raise_for_status()
-        data = resp.json()
-    else:
-        raw = json.dumps(payload).encode()
-        req = urllib.request.Request(
-            f"{base_url}/v1/completions",
-            data=raw,
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
-        with urllib.request.urlopen(req, timeout=60) as r:
-            data = json.loads(r.read().decode())
-
+    resp = requests.post(f"{base_url}/v1/completions", json=payload, timeout=60)
+    resp.raise_for_status()
+    data = resp.json()
     choice           = data["choices"][0]
     logprobs_obj     = choice.get("logprobs", {})
     top_logprobs_list = logprobs_obj.get("top_logprobs", [])

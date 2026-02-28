@@ -22,7 +22,7 @@ import requests
 MODELS = [
     # {"name": "Pradheep1647/adrl-codestral-4bit", "base_url": "http://100.91.18.11:8001"},
     # {"name": "Pradheep1647/adrl-qwen2.5-coder-4bit", "base_url": "http://100.18.91.11:8000"},
-    {"name": "openai/gpt-oss-20b", "base_url": "http://100.102.32.122:8002"},
+    {"name": "openai/gpt-oss-20b", "base_url": "http://100.73.177.66:8002"},
 ]
 
 # ── prompt to test ─────────────────────────────────────────────────────────────
