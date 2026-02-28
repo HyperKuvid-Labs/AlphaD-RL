@@ -1249,7 +1249,7 @@ def run_rollout(
 
     section(f"Rollout {rollout_idx + 1}")
     console.print(Panel(
-        LEVEL_GUESSER_EXPLANATION.strip(),
+        LEVEL_GUESSER_EXPLANATION,
         title="[bold cyan]What is the Level Guesser?[/]",
         border_style="cyan",
         padding=(0, 2),
