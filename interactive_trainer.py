@@ -1248,6 +1248,12 @@ def run_rollout(
 ) -> Tuple[List[str], List[str], float, float]:
 
     section(f"Rollout {rollout_idx + 1}")
+    console.print(Panel(
+        LEVEL_GUESSER_EXPLANATION.strip(),
+        title="[bold cyan]What is the Level Guesser?[/]",
+        border_style="cyan",
+        padding=(0, 2),
+    ))
     state = env.reset(prompt, test, entrypoint, best_solution=best_solution)
     states:  List[str] = []
     actions: List[str] = []
