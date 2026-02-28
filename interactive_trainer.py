@@ -84,17 +84,17 @@ TEACHER_MODELS: List[dict] = [
     {
         "display_name": "GPT-oss-20B",
         "name":         "openai/gpt-oss-20b",
-        "base_url":     os.environ.get("VLLM_URL_0", "http://100.73.177.66:8002"),
+        "base_url":     "http://100.73.177.66:8002",
     },
     {
         "display_name": "Qwen2.5-Coder-14B",
         "name":         "Pradheep1647/adrl-qwen2.5-coder-4bit",
-        "base_url":     os.environ.get("VLLM_URL_1", "http://100.106.99.109:8000"),
+        "base_url":     "http://100.106.99.109:8000"
     },
     {
         "display_name": "Codestral-22B",
         "name":         "Pradheep1647/adrl-codestral-4bit",
-        "base_url":     os.environ.get("VLLM_URL_2", "http://100.127.121.101:8001"),
+        "base_url":     "http://100.127.121.101:8001",
     },
 ]
 
@@ -118,7 +118,7 @@ def _get_next_token_logprobs_vllm(
         "prompt":      prompt,
         "max_tokens":  1,
         "temperature": 0.0,
-        "logprobs":    max(top_n, 1),
+        "logprobs":    20,
         "echo":        False,
     }
     resp = requests.post(f"{base_url}/v1/completions", json=payload, timeout=60)
