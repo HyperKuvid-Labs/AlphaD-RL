@@ -89,7 +89,7 @@ TEACHER_MODELS: List[dict] = [
     {
         "display_name": "GPT-oss-20B",
         "name":         "openai/gpt-oss-20b",
-        "base_url":     os.environ.get("VLLM_URL_0", "100.73.177.66:8002"),
+        "base_url":     os.environ.get("VLLM_URL_0", "http://100.73.177.66:8002"),
     },
     {
         "display_name": "Qwen2.5-Coder-14B",
