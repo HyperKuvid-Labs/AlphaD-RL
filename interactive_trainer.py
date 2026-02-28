@@ -122,6 +122,7 @@ def _get_next_token_logprobs_vllm(
         "echo":        False,
     }
     resp = requests.post(f"{base_url}/v1/completions", json=payload, timeout=60)
+    print(f"Response: {resp}")
     resp.raise_for_status()
     data = resp.json()
     choice           = data["choices"][0]
