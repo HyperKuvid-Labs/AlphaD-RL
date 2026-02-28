@@ -20,8 +20,8 @@ import requests
 
 # ── server config from quant_init.sh ─────────────────────────────────────────
 MODELS = [
-    # {"name": "Pradheep1647/adrl-codestral-4bit", "base_url": "http://100.91.18.11:8001"},
-    # {"name": "Pradheep1647/adrl-qwen2.5-coder-4bit", "base_url": "http://100.18.91.11:8000"},
+    {"name": "Pradheep1647/adrl-codestral-4bit", "base_url": "http://100.127.121.101:8001"},
+    {"name": "Pradheep1647/adrl-qwen2.5-coder-4bit", "base_url": "http://100.106.99.109:8000"},
     {"name": "openai/gpt-oss-20b", "base_url": "http://100.73.177.66:8002"},
 ]
 

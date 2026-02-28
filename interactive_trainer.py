@@ -119,7 +119,7 @@ def _get_next_token_logprobs_vllm(
         "max_tokens":  1,
         "temperature": 0.0,
         "logprobs":    20,
-        # "echo":        False,
+        "echo":        False,
     }
     resp = requests.post(f"{base_url}/v1/completions", json=payload, timeout=60)
     print(f"Response: {resp}")
@@ -678,7 +678,11 @@ class HumanMCTSEnvironment:
         self.last_leaf_text     = ""
         self._problem_idx       = problem_idx
         self._rollout_idx       = rollout_idx
-        self.root_node          = Node(None, "", None)
+        # ── Root node seeded with function signature + docstring ──────────────
+        # Using the full prompt ensures vLLM always gets valid code context
+        # (no more 400 Bad Request from empty prompt) and every partial looks
+        # like real Python from step 0 onward.
+        self.root_node          = Node(None, self.current_prompt.strip(), None)
         self.step_history       = []
 
         section("Golden / Best Solution")
@@ -707,7 +711,8 @@ class HumanMCTSEnvironment:
             warn("No golden solution found in dataset — process rewards will be 0.")
 
         self._show_golden()
-        return "Length:0, Agree:False, Value:0.00, Nodes:0. Stop? (Yes/No):"
+        init_len = len(self.root_node.generated_text)
+        return f"Length:{init_len}, Agree:False, Value:0.00, Nodes:0. Stop? (Yes/No):"
 
     def step(self, action_text: str) -> Tuple:
         action = action_text.strip().lower()
@@ -1100,7 +1105,8 @@ class HumanMCTSEnvironment:
         display = text if text.strip() else "(empty)"
         console.print(Panel(
             Syntax(display, "python", theme="dracula", word_wrap=True),
-            title=f"[bold blue]{title}[/]",
+            title=f"[bold blue]{title} — complete this function[/]",
+            subtitle=f"entry_point: {self.current_entrypoint}",
             border_style="blue",
         ))
 
